@@ -1,0 +1,21 @@
+{
+  "interval": "1h",
+  "management_base_url": "http://127.0.0.1:8317",
+  "management_key_env": "",
+  "management_key_file": "/CLIProxyAPI/mgmt.key",
+  "keep_existing_aliases": true,
+  "providers": {
+    "openrouter": {
+      "enabled": true,
+      "mode": "include",
+      "patterns": ["^openai/", "^anthropic/", "gpt-"],
+      "upstream_meta": true
+    },
+    "旋律": {
+      "enabled": true,
+      "mode": "include",
+      "patterns": ["gpt-", "kimi-"],
+      "modelparams": true
+    }
+  }
+}

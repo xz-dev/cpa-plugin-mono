@@ -1,0 +1,8 @@
+**/build/
+**/dist/
+**/.cache/
+*.so
+*.dylib
+*.dll
+*.h
+*.test

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>自动拉取模型</title>
+  <style>
+    :root { color-scheme: light dark; --bd: color-mix(in srgb, currentColor 18%, transparent); }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0 auto; padding: 20px; max-width: 1100px; }
+    h1 { font-size: 1.35rem; margin: 0 0 6px; }
+    h2 { font-size: 1.05rem; margin: 22px 0 10px; }
+    .muted { opacity: .72; font-size: .92rem; }
+    .err { color: #c62828; }
+    .ok { color: #2e7d32; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    button, select, input[type=text] { font: inherit; padding: 7px 10px; }
+    button.primary { font-weight: 600; }
+    .card { border: 1px solid var(--bd); border-radius: 12px; padding: 14px; margin: 10px 0; }
+    .card h3 { margin: 0 0 8px; font-size: 1rem; }
+    .grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: start; }
+    textarea.patterns { width: 100%; min-height: 72px; font-family: ui-monospace, monospace; font-size: 13px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .cols, .grid { grid-template-columns: 1fr; } }
+    .list { border: 1px solid var(--bd); border-radius: 8px; padding: 8px; max-height: 240px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--bd); font-size: .8rem; }
+    label.inline { display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }
+  </style>
+</head>
+<body>
+  <h1>自动拉取模型</h1>
+  <p class="muted">从 CPA 已有的 OpenAI 兼容渠道拉上游模型列表，用正则过滤后再写回 AI Providers。进入页面会自动刷新上游目录。</p>
+  <p id="banner" class="muted"></p>
+  <div id="loginBox" class="card" hidden>
+    <h3>连接 CPA</h3>
+    <p class="muted">未读到 Management Center 登录态时才需要这一步（与官方插件相同）。</p>
+    <div class="grid">
+      <div>API 地址</div><div><input id="loginBase" type="text" size="36" placeholder="http://127.0.0.1:8317"/></div>
+      <div>Management Key</div><div><input id="loginKey" type="password" size="36" autocomplete="off"/></div>
+    </div>
+    <div class="row"><button id="loginBtn" class="primary">连接</button></div>
+  </div>
+
+  <div class="card">
+    <h3>全局</h3>
+    <div class="row">
+      <label>同步周期
+        <select id="interval">
+          <option value="0">仅手动</option>
+          <option value="15m">每 15 分钟</option>
+          <option value="30m">每 30 分钟</option>
+          <option value="1h" selected>每 1 小时</option>
+          <option value="3h">每 3 小时</option>
+          <option value="6h">每 6 小时</option>
+        </select>
+      </label>
+      <label class="inline"><input type="checkbox" id="keepAlias" checked/> 保留已有别名</label>
+      <span id="keyState" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <select id="addSelect"></select>
+    <button id="addBtn">添加这个渠道</button>
+  </div>
+  <div id="cards"></div>
+
+  <div class="row">
+    <button id="reload">重新加载</button>
+    <button id="save">保存规则</button>
+    <button id="preview" class="primary">试运行（不写入）</button>
+    <button id="apply">确认写入</button>
+  </div>
+  <p id="msg" class="muted"></p>
+  <div id="result"></div>
+
+  <script>
+    const api = location.origin + "/v0/management/plugins/auto-pull-models";
+    let cfg = {interval:"1h", management_base_url:"http://127.0.0.1:8317", management_key_env:"", management_key_file:"/CLIProxyAPI/mgmt.key", keep_existing_aliases:true, providers:{}};
+    let hostProviders = [];
+
+    // Host auth: same as cpa-key-policy / cpa-account-config-manager.
+    const ENC_PREFIX = "enc::v1::";
+    const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+    const STORAGE_KEY_AUTH = "cli-proxy-auth";
+    let cachedKeyBytes = null;
+    let sessionAuth = null;
+    function encodeText(text) { return new TextEncoder().encode(text); }
+    function decodeText(bytes) { return new TextDecoder().decode(bytes); }
+    function getKeyBytes() {
+      if (cachedKeyBytes) return cachedKeyBytes;
+      try {
+        cachedKeyBytes = encodeText(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`);
+      } catch {
+        cachedKeyBytes = encodeText(SECRET_SALT);
+      }
+      return cachedKeyBytes;
+    }
+    function xorBytes(data, keyBytes) {
+      const result = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) result[i] = data[i] ^ keyBytes[i % keyBytes.length];
+      return result;
+    }
+    function fromBase64(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+    function deobfuscateData(payload) {
+      if (!payload || !payload.startsWith(ENC_PREFIX)) return payload;
+      try {
+        return decodeText(xorBytes(fromBase64(payload.slice(ENC_PREFIX.length)), getKeyBytes()));
+      } catch {
+        return payload;
+      }
+    }
+    function inIframe() {
+      try { return window.self !== window.top; } catch { return false; }
+    }
+    function parseHostAuth(obj) {
+      if (!obj || typeof obj !== "object") return null;
+      const n = obj.state ?? obj;
+      const apiBase = typeof n.apiBase === "string" ? n.apiBase.trim() : "";
+      const managementKey = typeof n.managementKey === "string" ? n.managementKey.trim() : "";
+      if (!apiBase || !managementKey) return null;
+      return { apiBase, managementKey };
+    }
+    // cpa-key-policy: only auto-read host storage inside the Management Center iframe.
+    function readHostAuth() {
+      if (!inIframe()) return null;
+      let raw;
+      try { raw = localStorage.getItem(STORAGE_KEY_AUTH); } catch { return null; }
+      if (!raw) return null;
+      let plain;
+      try { plain = deobfuscateData(raw); } catch { return null; }
+      try { return parseHostAuth(JSON.parse(plain)); } catch { return null; }
+    }
+    function currentAuth() {
+      return sessionAuth || readHostAuth();
+    }
+    function mgmtKey() {
+      const auth = currentAuth();
+      return (auth && auth.managementKey) || "";
+    }
+    function updateKeyState() {
+      const el = document.getElementById("keyState");
+      const loginBox = document.getElementById("loginBox");
+      if (mgmtKey()) {
+        el.textContent = "已从 Management Center 读取密钥";
+        el.className = "ok";
+        if (loginBox) loginBox.hidden = true;
+        return true;
+      }
+      el.textContent = inIframe()
+        ? "未读到 cli-proxy-auth（请确认已登录并勾选记住密码）"
+        : "请从 Management Center 菜单打开，或在下方连接";
+      el.className = "err";
+      if (loginBox) {
+        loginBox.hidden = false;
+        const base = document.getElementById("loginBase");
+        if (base && !base.value) base.value = location.origin;
+      }
+      return false;
+    }
+
+    async function call(method, path, body) {
+      const headers = {"Accept":"application/json"};
+      const key = mgmtKey();
+      if (key) headers["Authorization"] = "Bearer " + key;
+      let payload;
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        payload = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      const res = await fetch(api + path, {method, headers, body: payload});
+      const text = await res.text();
+      let data; try { data = JSON.parse(text); } catch { data = text; }
+      if (!res.ok && !(data && data.providers)) {
+        throw new Error(typeof data === "string" ? data : (data.error || JSON.stringify(data)));
+      }
+      return data;
+    }
+
+    function formConfig() {
+      const providers = {};
+      document.querySelectorAll("[data-card]").forEach(card => {
+        const name = card.dataset.card;
+        const patterns = card.querySelector(".patterns").value.split("\n").map(s => s.trim()).filter(Boolean);
+        providers[name] = {
+          enabled: card.querySelector(".en").checked,
+          mode: card.querySelector(".mode").value,
+          patterns,
+          modelparams: card.querySelector(".mp").checked,
+          upstream_meta: card.querySelector(".um").checked
+        };
+      });
+      return {
+        ...cfg,
+        interval: document.getElementById("interval").value,
+        keep_existing_aliases: document.getElementById("keepAlias").checked,
+        providers
+      };
+    }
+
+    function renderCards() {
+      const box = document.getElementById("cards");
+      box.innerHTML = "";
+      const names = Object.keys(cfg.providers || {});
+      if (!names.length) {
+        box.innerHTML = "<p class='muted'>还没有要同步的渠道。上面下拉框选一个 CPA 里已有的 OpenAI 兼容渠道，点添加。</p>";
+        return;
+      }
+      names.forEach(name => {
+        const p = cfg.providers[name] || {enabled:true, mode:"include", patterns:[], modelparams:false};
+        const host = hostProviders.find(h => h.name === name);
+        const card = document.createElement("div");
+        card.className = "card";
+        card.dataset.card = name;
+        card.innerHTML = `
+          <h3>${escapeHtml(name)} ${host ? `<span class="pill">${host.model_count} 个现有模型</span>` : `<span class="pill">CPA 中未找到</span>`}</h3>
+          <div class="grid">
+            <div>启用</div><div><label class="inline"><input class="en" type="checkbox" ${p.enabled?"checked":""}/> 同步这个渠道</label></div>
+            <div>推理强度</div><div>
+              <label class="inline"><input class="um" type="checkbox" ${p.upstream_meta?"checked":""}/> 用上游 /models 填写（OpenRouter 自带 reasoning / 模态）</label>
+              <div class="muted">复用这次拉取的上游目录，不再额外请求。适合 OpenRouter。</div>
+              <label class="inline"><input class="mp" type="checkbox" ${p.modelparams?"checked":""}/> 用 modelparams.dev 填写 thinking.levels</label>
+              <div class="muted">本次刷新会拉一次 Full catalog，所有勾选的渠道共用。上游已命中的档位不会被覆盖。</div>
+            </div>
+            <div>规则</div>
+            <div>
+              <label class="inline"><input type="radio" name="mode-${escapeHtml(name)}" value="include" ${p.mode!=="exclude"?"checked":""}/> 只保留匹配</label>
+              <label class="inline"><input type="radio" name="mode-${escapeHtml(name)}" value="exclude" ${p.mode==="exclude"?"checked":""}/> 排除匹配</label>
+              <select class="mode" hidden>
+                <option value="include" ${p.mode!=="exclude"?"selected":""}>include</option>
+                <option value="exclude" ${p.mode==="exclude"?"selected":""}>exclude</option>
+              </select>
+            </div>
+            <div>正则<br><span class="muted">一行一条</span></div>
+            <div>
+              <textarea class="patterns" placeholder="例如 gpt-&#10;^anthropic/&#10;embed">${escapeHtml((p.patterns||[]).join("\n"))}</textarea>
+              <div class="muted">只保留：匹配任一正则的留下。排除：匹配的丢掉。排除且不填 = 全要。</div>
+            </div>
+          </div>
+          <div class="row">
+            <button data-preview>试运行这一条</button>
+            <button data-del>移除</button>
+          </div>`;
+        card.querySelectorAll(`input[name="mode-${name}"]`).forEach(r => {
+          r.onchange = () => { card.querySelector(".mode").value = r.value; };
+        });
+        card.querySelector("[data-del]").onclick = () => { delete cfg.providers[name]; renderCards(); fillAdd(); };
+        card.querySelector("[data-preview]").onclick = () => run("preview", name);
+        box.appendChild(card);
+      });
+    }
+
+    function fillAdd() {
+      const sel = document.getElementById("addSelect");
+      const used = new Set(Object.keys(cfg.providers || {}));
+      const rest = hostProviders.filter(p => !used.has(p.name));
+      sel.innerHTML = rest.length
+        ? rest.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}（当前 ${p.model_count} 个模型）</option>`).join("")
+        : `<option value="">没有可添加的渠道</option>`;
+      sel.disabled = !rest.length;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function renderReport(data) {
+      const el = document.getElementById("result");
+      if (!data || !data.providers) {
+        el.innerHTML = `<p class="err">${escapeHtml(data && data.error || "没有结果")}</p>`;
+        return;
+      }
+      el.innerHTML = data.providers.map(p => {
+        const klass = p.error ? "err" : "ok";
+        return `<div class="card">
+          <h3>${escapeHtml(p.name)} <span class="pill">${p.dry_run?"试运行":"已写入"}</span></h3>
+          <p class="${klass}">${p.error ? escapeHtml(p.error) : `上游 ${p.fetched} → 保留 ${p.kept}，丢掉 ${p.dropped}，将写入 ${p.written}（当前 ${p.current}）${p.unchanged?"，和现在一样":""}${p.thinking_matched||p.thinking_missed?`；推理强度命中 ${p.thinking_matched||0}，未命中 ${p.thinking_missed||0}`:""}${p.modelparams_error?`；modelparams：${escapeHtml(p.modelparams_error)}`:""}`}</p>
+          <div class="cols">
+            <div><div class="muted">将保留</div><div class="list">${(p.kept_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
+            <div><div class="muted">将丢掉</div><div class="list">${(p.dropped_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
+          </div>
+        </div>`;
+      }).join("") + (data.error ? `<p class="err">${escapeHtml(data.error)}</p>` : "");
+    }
+
+    async function load() {
+      if (!updateKeyState()) {
+        document.getElementById("banner").textContent = "等待 Management Center 登录态…";
+        return;
+      }
+      document.getElementById("banner").textContent = "正在加载…";
+      cfg = await call("GET", "/json");
+      if (typeof cfg === "string") cfg = JSON.parse(cfg);
+      cfg.providers = cfg.providers || {};
+      document.getElementById("interval").value = cfg.interval || "1h";
+      document.getElementById("keepAlias").checked = cfg.keep_existing_aliases !== false;
+      try {
+        const host = await call("GET", "/compat-providers");
+        hostProviders = host.providers || [];
+      } catch (e) {
+        hostProviders = [];
+        document.getElementById("banner").textContent = e.message;
+        renderCards();
+        fillAdd();
+        return;
+      }
+      renderCards();
+      fillAdd();
+      const names = Object.keys(cfg.providers || {});
+      if (!names.length) {
+        document.getElementById("banner").textContent = "还没有要同步的渠道。";
+        return;
+      }
+      document.getElementById("banner").textContent = "正在刷新上游目录…";
+      await run("preview");
+      document.getElementById("banner").textContent = "已自动刷新。确认无误后再写入。";
+    }
+
+    async function run(kind, only) {
+      const msg = document.getElementById("msg");
+      msg.textContent = kind === "preview" ? "正在试运行…" : "正在写入…";
+      try {
+        const body = formConfig();
+        const q = only ? ("?provider=" + encodeURIComponent(only)) : "";
+        const data = await call("POST", "/" + kind + q, body);
+        renderReport(data);
+        msg.textContent = kind === "preview" ? "试运行完成，尚未写入。" : "写入完成。";
+        msg.className = data.ok ? "ok" : "err";
+      } catch (e) {
+        msg.textContent = e.message;
+        msg.className = "err";
+      }
+    }
+
+    document.getElementById("addBtn").onclick = () => {
+      const name = document.getElementById("addSelect").value;
+      if (!name) return;
+      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false};
+      renderCards();
+      fillAdd();
+    };
+    document.getElementById("reload").onclick = () => load().catch(e => alert(e.message));
+    document.getElementById("save").onclick = async () => {
+      try {
+        await call("PUT", "/json", formConfig());
+        document.getElementById("msg").textContent = "规则已保存。";
+        document.getElementById("msg").className = "ok";
+        await load();
+      } catch (e) { alert(e.message); }
+    };
+    document.getElementById("preview").onclick = () => run("preview");
+    document.getElementById("apply").onclick = () => {
+      if (!confirm("确认把试运行的结果写入 AI Providers 模型列表？")) return;
+      run("sync");
+    };
+    document.getElementById("loginBtn").onclick = () => {
+      const apiBase = (document.getElementById("loginBase").value || "").trim();
+      const managementKey = (document.getElementById("loginKey").value || "").trim();
+      if (!apiBase || !managementKey) {
+        document.getElementById("banner").textContent = "请填写 API 地址和 Management Key";
+        return;
+      }
+      sessionAuth = { apiBase, managementKey };
+      load().catch(e => document.getElementById("banner").textContent = e.message);
+    };
+    load().catch(e => document.getElementById("banner").textContent = e.message);
+  </script>
+</body>
+</html>
