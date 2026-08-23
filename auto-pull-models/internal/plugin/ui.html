@@ -192,7 +192,8 @@
           patterns,
           modelparams: card.querySelector(".mp").checked,
           upstream_meta: card.querySelector(".um").checked,
-          codex_manifest: card.querySelector(".cm").checked
+          codex_manifest: card.querySelector(".cm").checked,
+          modelsdev: card.querySelector(".mdv").checked
         };
       });
       return {
@@ -228,6 +229,10 @@
               <div class="muted">复用这次拉取的上游目录，不再额外请求；支持 OpenRouter 和 Codex manifest。</div>
               <label class="inline"><input class="mp" type="checkbox" ${p.modelparams?"checked":""}/> 用 modelparams.dev 填写 thinking.levels</label>
               <div class="muted">本次刷新会拉一次 Full catalog，所有勾选的渠道共用。上游已命中的档位不会被覆盖。</div>
+            </div>
+            <div>上下文</div><div>
+              <label class="inline"><input class="mdv" type="checkbox" ${p.modelsdev?"checked":""}/> 填写 max-context-length</label>
+              <div class="muted">上游已声明的 context 优先；空缺用 models.dev 补。勾选的渠道共用一次 models.dev catalog。</div>
             </div>
             <div>规则</div>
             <div>
@@ -342,7 +347,7 @@
     document.getElementById("addBtn").onclick = () => {
       const name = document.getElementById("addSelect").value;
       if (!name) return;
-      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false};
+      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false, modelsdev:false};
       renderCards();
       fillAdd();
     };

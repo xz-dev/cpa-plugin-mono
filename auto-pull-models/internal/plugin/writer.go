@@ -3,20 +3,25 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// writeModelsFile atomically replaces the models list of the named
-// openai-compatibility providers inside configFile.
-//
-// It writes a temp file and renames it over the original, so the CPA file
-// watcher only ever observes a complete file — the same property that keeps
-// CPA's own auth-file writes safe. A management PATCH instead rewrites the
-// whole config with os.Create (truncate + write), and the watcher can read
-// the truncated/partial YAML mid-write and permanently disable management
-// routes because remote-management.secret-key appeared to vanish.
+const (
+	backupSuffix = ".auto-pull-bak."
+	maxBackups   = 10
+)
+
+// writeModelsFile replaces the models list of the named openai-compatibility
+// providers inside configFile. New YAML is fully prepared first, the previous
+// file is copied into a FIFO of up to 10 backups, then the live file is
+// overwritten in place so CPA's inode watcher sees a Write (rename would
+// leave it watching a dead inode).
 func writeModelsFile(configFile string, updates map[string][]ModelRef) error {
 	raw, err := os.ReadFile(configFile)
 	if err != nil {
@@ -92,20 +97,53 @@ func writeModelsFile(configFile string, updates map[string][]ModelRef) error {
 	if info, err := os.Stat(configFile); err == nil {
 		mode = info.Mode().Perm()
 	}
-	tmp := configFile + ".auto-pull-tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), mode); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write temp config: %w", err)
+	if err := writeBackup(configFile, raw, mode); err != nil {
+		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("chmod temp config: %w", err)
-	}
-	if err := os.Rename(tmp, configFile); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
+	pruneBackups(configFile)
+	if err := writeInPlace(configFile, buf.Bytes()); err != nil {
+		_ = writeInPlace(configFile, raw)
+		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+func writeBackup(configFile string, raw []byte, mode os.FileMode) error {
+	path := fmt.Sprintf("%s%s%d", configFile, backupSuffix, time.Now().UnixNano())
+	if err := os.WriteFile(path, raw, mode); err != nil {
+		return fmt.Errorf("backup config: %w", err)
+	}
+	return nil
+}
+
+func pruneBackups(configFile string) {
+	matches, err := filepath.Glob(configFile + backupSuffix + "*")
+	if err != nil || len(matches) <= maxBackups {
+		return
+	}
+	sort.Strings(matches)
+	for _, path := range matches[:len(matches)-maxBackups] {
+		_ = os.Remove(path)
+	}
+}
+
+func writeInPlace(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	n, err := f.Write(data)
+	if err != nil {
+		return err
+	}
+	if n < len(data) {
+		return io.ErrShortWrite
+	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func findMappingValue(m *yaml.Node, key string) *yaml.Node {

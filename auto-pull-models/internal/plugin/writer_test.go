@@ -3,7 +3,9 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -111,13 +113,64 @@ func TestWriteModelsFileReplacesOnlyTargetProvider(t *testing.T) {
 		t.Fatalf("model[1] wrong: %+v", zcode.Models[1])
 	}
 
-	// no temp leftovers
 	entries, _ := os.ReadDir(filepath.Dir(path))
+	baks := 0
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "auto-pull-tmp") {
 			t.Fatalf("temp file leaked: %s", e.Name())
 		}
+		if strings.Contains(e.Name(), backupSuffix) {
+			baks++
+		}
 	}
+	if baks != 1 {
+		t.Fatalf("backups = %d, want 1", baks)
+	}
+}
+
+func TestWriteModelsFileKeepsInodeAndCapsBackups(t *testing.T) {
+	path := writeTemp(t, sampleConfig)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("no inode on this OS")
+	}
+	inode := stat.Ino
+
+	for i := 0; i < 12; i++ {
+		if err := writeModelsFile(path, map[string][]ModelRef{
+			"ZCode": {{Name: fmtName(i), Alias: fmtName(i)}},
+		}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok = info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("lost inode stat")
+	}
+	if stat.Ino != inode {
+		t.Fatalf("inode changed: %d -> %d", inode, stat.Ino)
+	}
+
+	matches, err := filepath.Glob(path + backupSuffix + "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != maxBackups {
+		t.Fatalf("backups = %d, want %d: %v", len(matches), maxBackups, matches)
+	}
+}
+
+func fmtName(i int) string {
+	return "m-" + strconv.Itoa(i)
 }
 
 func TestWriteModelsFileUnknownProviderErrors(t *testing.T) {

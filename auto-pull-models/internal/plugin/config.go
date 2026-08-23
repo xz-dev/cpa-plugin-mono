@@ -16,12 +16,10 @@ const (
 
 	// WriteModeAPI writes via PATCH /v0/management/openai-compatibility.
 	WriteModeAPI = "api"
-	// WriteModeFile writes config.yaml directly with tmp+rename so the CPA
-	// file watcher only ever sees complete files. Management PATCH truncates
-	// the whole config in place (os.Create + write), which can race the
-	// watcher into reading a partial YAML and permanently disabling the
-	// management routes. File mode mirrors how CPA's own auth-file writes
-	// stay safe.
+	// WriteModeFile writes config.yaml in place (same inode) after copying
+	// the previous file into a FIFO of up to 10 backups. Same-inode Write
+	// events are what CPA's watcher.Add(configPath) actually sees; rename
+	// over the watched path leaves the watcher on a dead inode.
 	WriteModeFile = "file"
 )
 
