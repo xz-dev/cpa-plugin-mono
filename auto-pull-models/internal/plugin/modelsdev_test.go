@@ -38,6 +38,20 @@ func TestParseAndMatchModelsdev(t *testing.T) {
 	}
 }
 
+func TestModelsdevPrefersOpenRouterThenLexicographic(t *testing.T) {
+	cat, err := parseModelsdevCatalog([]byte(`{
+		"zgate": {"models": {"glm-x": {"id": "glm-x", "limit": {"context": 111, "output": 1}}}},
+		"openrouter": {"models": {"z-ai/glm-x": {"id": "glm-x", "limit": {"context": 222, "output": 2}}}},
+		"agg-b": {"models": {"glm-x": {"id": "glm-x", "limit": {"context": 333, "output": 3}}}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := cat.lookup("glm-x"); !ok || e.Context != 222 {
+		t.Fatalf("openrouter must win: %+v ok=%v", e, ok)
+	}
+}
+
 func TestDecodeUpstreamMaxTokens(t *testing.T) {
 	entries, err := parseUpstreamCatalog([]byte(`{"models":[
 		{"slug":"gpt-5.6-sol","context_window":272000,"max_tokens":128000},

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Info</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 16px; background: #f6f7f9; color: #1c1e21; }
+  @media (prefers-color-scheme: dark) { body { background: #16181c; color: #e4e6eb; } }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  input, select, button { font: inherit; padding: 6px 10px; border: 1px solid #c8ccd4; border-radius: 6px; background: #fff; color: inherit; }
+  @media (prefers-color-scheme: dark) { input, select, button { background: #22252a; border-color: #3a3f47; } }
+  #q { flex: 1; min-width: 200px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; overflow: hidden; }
+  @media (prefers-color-scheme: dark) { table { background: #1d2025; } }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e4e6eb; white-space: nowrap; }
+  @media (prefers-color-scheme: dark) { th, td { border-color: #2c3037; } }
+  th { cursor: pointer; user-select: none; position: sticky; top: 0; background: #eef0f3; }
+  @media (prefers-color-scheme: dark) { th { background: #24272d; } }
+  td.mono { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .lvl { display: inline-block; padding: 1px 7px; margin: 1px 2px; border-radius: 10px; background: #e3ecff; font-size: 12px; }
+  @media (prefers-color-scheme: dark) { .lvl { background: #26314a; } }
+  .miss { color: #c0392b; font-weight: 600; }
+  #status { margin: 8px 0; color: #65676b; }
+</style>
+</head>
+<body>
+<h1>Model Info</h1>
+<div class="bar">
+  <input id="q" placeholder="搜索 id / 名称 / provider…">
+  <select id="provider"><option value="">全部 provider</option></select>
+  <button id="refresh">刷新</button>
+</div>
+<div id="status">加载中…</div>
+<table><thead><tr>
+  <th data-k="id">ID</th><th data-k="display_name">名称</th><th data-k="provider">Provider</th>
+  <th data-k="context_window" data-n>上下文</th><th data-k="max_tokens" data-n>输出上限</th>
+  <th>推理等级</th><th>输入</th><th>输出</th>
+</tr></thead><tbody id="rows"></tbody></table>
+<script>
+let models = [], sortKey = 'id', sortAsc = true;
+const rows = document.getElementById('rows'), status = document.getElementById('status');
+
+function fmtK(n) { return n ? (n >= 1000 ? (n/1000).toFixed(0)+'k' : n) : ''; }
+
+function render() {
+  const q = document.getElementById('q').value.toLowerCase();
+  const pv = document.getElementById('provider').value;
+  const list = models.filter(m =>
+    (!pv || m.provider === pv) &&
+    (!q || (m.id + ' ' + (m.display_name||'') + ' ' + (m.provider||'')).toLowerCase().includes(q))
+  ).sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    const c = typeof x === 'number' ? (x||0) - (y||0) : String(x||'').localeCompare(String(y||''));
+    return sortAsc ? c : -c;
+  });
+  rows.innerHTML = list.map(m => `<tr>
+    <td class="mono">${m.id}</td>
+    <td>${m.display_name || m.id}</td>
+    <td class="mono">${m.provider || ''}</td>
+    <td class="mono">${fmtK(m.context_window) || '<span class="miss">缺</span>'}</td>
+    <td class="mono">${fmtK(m.max_tokens) || '<span class="miss">缺</span>'}</td>
+    <td>${(m.reasoning_levels||[]).map(l => `<span class="lvl">${l}</span>`).join('') || '<span class="miss">无</span>'}</td>
+    <td>${(m.input_modalities||[]).join(',')}</td>
+    <td>${(m.output_modalities||[]).join(',')}</td>
+  </tr>`).join('');
+  status.textContent = `${list.length} / ${models.length} 个模型`;
+}
+
+async function load() {
+  status.textContent = '加载中…';
+  try {
+    const r = await fetch('catalog');
+    const c = await r.json();
+    if (c.error) { status.textContent = '错误: ' + c.error; return; }
+    models = c.models || [];
+    const provs = [...new Set(models.map(m => m.provider).filter(Boolean))].sort();
+    const sel = document.getElementById('provider');
+    sel.innerHTML = '<option value="">全部 provider</option>' + provs.map(p => `<option>${p}</option>`).join('');
+    render();
+  } catch (e) { status.textContent = '请求失败: ' + e; }
+}
+
+document.getElementById('q').addEventListener('input', render);
+document.getElementById('provider').addEventListener('change', render);
+document.getElementById('refresh').addEventListener('click', load);
+document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = true; }
+  render();
+}));
+load();
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ package plugin
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -61,33 +62,43 @@ func (s *Service) managesProvider(name string) bool {
 	return false
 }
 
-// ensureEnriched runs a bounded on-demand sync when the snapshot is missing.
-// name == "" means "any provider". ponytail: no dedup of concurrent syncs;
-// duplicate fetches are harmless and rare (startup only).
+// ensureEnriched runs an on-demand sync when the snapshot is missing.
+// name == "" means "any provider". Retries until the snapshot is ready:
+// during host boot the management HTTP server may not be listening yet, and
+// a permanently empty static response would disable model_provider for the
+// whole process lifetime. ponytail: fixed 2s poll, 60s cap — enough for boot.
 func (s *Service) ensureEnriched(name string) {
-	if name != "" {
-		s.mu.Lock()
-		_, ok := s.lookupEnrichedLocked(name)
-		s.mu.Unlock()
-		if ok {
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if s.snapshotReady(name) {
 			return
 		}
-	} else {
 		s.mu.Lock()
-		any := len(s.enriched) > 0
+		cfg := s.cfg
 		s.mu.Unlock()
-		if any {
+		key := resolveManagementKey(cfg)
+		if key == "" {
 			return
 		}
+		s.SyncWithKey(key, name)
+		if s.snapshotReady(name) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
+}
+
+func (s *Service) snapshotReady(name string) bool {
 	s.mu.Lock()
-	cfg := s.cfg
-	s.mu.Unlock()
-	key := resolveManagementKey(cfg)
-	if key == "" {
-		return
+	defer s.mu.Unlock()
+	if name == "" {
+		return len(s.enriched) > 0
 	}
-	s.SyncWithKey(key, name)
+	_, ok := s.lookupEnrichedLocked(name)
+	return ok
 }
 
 // enrichedModels builds pluginapi.ModelInfo entries from the snapshot.

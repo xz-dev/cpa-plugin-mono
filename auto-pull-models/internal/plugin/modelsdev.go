@@ -12,12 +12,13 @@ const defaultModelsdevURL = "https://models.dev/api.json"
 
 // modelsdevModel carries the limit/modality metadata we use from models.dev.
 type modelsdevModel struct {
-	FullKey string
-	ID      string
-	Context int
-	MaxOut  int
-	Input   []string
-	Output  []string
+	FullKey  string
+	Provider string
+	ID       string
+	Context  int
+	MaxOut   int
+	Input    []string
+	Output   []string
 }
 
 type modelsdevCatalog struct {
@@ -79,12 +80,13 @@ func parseModelsdevCatalog(raw []byte) (*modelsdevCatalog, error) {
 				fullKey = provider + "/" + key
 			}
 			entry := modelsdevModel{
-				FullKey: fullKey,
-				ID:      id,
-				Context: model.Limit.Context,
-				MaxOut:  model.Limit.Output,
-				Input:   model.Modalities.Input,
-				Output:  model.Modalities.Output,
+				FullKey:  fullKey,
+				Provider: provider,
+				ID:       id,
+				Context:  model.Limit.Context,
+				MaxOut:   model.Limit.Output,
+				Input:    model.Modalities.Input,
+				Output:   model.Modalities.Output,
 			}
 			if entry.Context <= 0 && entry.MaxOut <= 0 && len(entry.Input) == 0 {
 				continue // placeholder rows with zero limits carry no data
@@ -102,9 +104,18 @@ func parseModelsdevCatalog(raw []byte) (*modelsdevCatalog, error) {
 		return nil, fmt.Errorf("modelsdev: empty catalog")
 	}
 	for _, list := range cat.byBare {
-		sort.Slice(list, func(i, j int) bool { return list[i].FullKey < list[j].FullKey })
+		sort.Slice(list, func(i, j int) bool { return modelsdevRank(list[i]) < modelsdevRank(list[j]) })
 	}
 	return cat, nil
+}
+
+// modelsdevRank prefers the OpenRouter listing when the same bare id appears
+// under several vendors, then falls back to lexicographic order.
+func modelsdevRank(m modelsdevModel) string {
+	if strings.EqualFold(m.Provider, "openrouter") {
+		return "\x00" + m.FullKey
+	}
+	return m.FullKey
 }
 
 // lookup resolves a model id: exact provider-qualified key first, then the
