@@ -24,10 +24,20 @@
   @media (prefers-color-scheme: dark) { .lvl { background: #26314a; } }
   .miss { color: #c0392b; font-weight: 600; }
   #status { margin: 8px 0; color: #65676b; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tab { border-radius: 6px; }
+  .tab.active { background: #1c6ef2; border-color: #1c6ef2; color: #fff; }
+  @media (prefers-color-scheme: dark) { .tab.active { background: #2b7fff; } }
+  .src { font-size: 11px; margin-left: 4px; padding: 0 5px; border-radius: 8px; background: #d9f2d9; color: #1b5e20; }
+  @media (prefers-color-scheme: dark) { .src { background: #1e3a24; color: #81c784; } }
 </style>
 </head>
 <body>
 <h1>Model Info</h1>
+<div class="tabs">
+  <button class="tab active" data-view="effective">实际输出</button>
+  <button class="tab" data-view="raw">Raw</button>
+</div>
 <div class="bar">
   <input id="q" placeholder="搜索 id / 名称 / provider…">
   <select id="provider"><option value="">全部 provider</option></select>
@@ -85,7 +95,8 @@ function readHostKey() {
 function mgmtKey() { return manualKey || readHostKey(); }
 const api = location.origin + '/v0/management/plugins/model-info';
 
-let models = [], sortKey = 'id', sortAsc = true;
+let rawModels = [], effModels = [], view = 'effective';
+function models() { return view === 'raw' ? rawModels : effModels; }
 const rows = document.getElementById('rows'), status = document.getElementById('status');
 
 function fmtK(n) { return n ? (n >= 1000 ? (n/1000).toFixed(0)+'k' : n) : ''; }
@@ -93,7 +104,7 @@ function fmtK(n) { return n ? (n >= 1000 ? (n/1000).toFixed(0)+'k' : n) : ''; }
 function render() {
   const q = document.getElementById('q').value.toLowerCase();
   const pv = document.getElementById('provider').value;
-  const list = models.filter(m =>
+  const list = models().filter(m =>
     (!pv || m.provider === pv) &&
     (!q || (m.id + ' ' + (m.display_name||'') + ' ' + (m.provider||'')).toLowerCase().includes(q))
   ).sort((a, b) => {
@@ -106,12 +117,15 @@ function render() {
     <td>${m.display_name || m.id}</td>
     <td class="mono">${m.provider || ''}</td>
     <td class="mono">${fmtK(m.context_window) || '<span class="miss">缺</span>'}</td>
-    <td class="mono">${fmtK(m.max_tokens) || '<span class="miss">缺</span>'}</td>
+    <td class="mono">${fmtK(m.max_tokens) || '<span class="miss">缺</span>'}${m.max_source === 'fallback-context' ? '<span class="src">回退</span>' : m.max_source === 'upstream' ? '<span class="src" style="background:#e8eaf6">原生</span>' : ''}</td>
     <td>${(m.reasoning_levels||[]).map(l => `<span class="lvl">${l}</span>`).join('') || '<span class="miss">无</span>'}</td>
     <td>${(m.input_modalities||[]).join(',')}</td>
     <td>${(m.output_modalities||[]).join(',')}</td>
   </tr>`).join('');
-  status.textContent = `${list.length} / ${models.length} 个模型`;
+  const missing = rawModels.filter(m => !m.max_tokens).length;
+  status.textContent = view === 'raw'
+    ? `${list.length} / ${rawModels.length} 个模型（raw，${missing} 个缺 max_tokens）`
+    : `${list.length} / ${effModels.length} 个模型（实际输出；缺 max 的按上下文回退）`;
 }
 
 async function load() {
@@ -121,13 +135,26 @@ async function load() {
     const key = mgmtKey();
     if (key) headers.Authorization = 'Bearer ' + key;
     else { status.textContent = inIframe() ? '未读到 Management Center 密钥，请手填 management key' : '请手填 management key'; return; }
-    const r = await fetch(api + '/catalog', {headers});
-    const text = await r.text();
-    let c;
-    try { c = JSON.parse(text); } catch { throw new Error('HTTP ' + r.status + ': ' + text.slice(0, 120)); }
-    if (c.error) { status.textContent = '错误: ' + c.error; return; }
-    models = c.models || [];
-    const provs = [...new Set(models.map(m => m.provider).filter(Boolean))].sort();
+    const [rc, re] = await Promise.all([
+      fetch(api + '/last', {headers}), fetch(api + '/effective', {headers}),
+    ]);
+    const parse = async r => { const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 120)); } };
+    let c, ce;
+    try { [c, ce] = await Promise.all([parse(rc), parse(re)]); } catch (e) { status.textContent = '请求失败: ' + e; return; }
+    if (c.error || (ce && ce.error)) { status.textContent = '错误: ' + (c.error || ce.error); return; }
+    if (!c.models) { // cold cache: fetch fresh
+      const rf = await fetch(api + '/catalog', {headers});
+      const cf = await parse(rf);
+      if (cf.error) { status.textContent = '错误: ' + cf.error; return; }
+      rawModels = cf.models || [];
+      const re2 = await fetch(api + '/effective', {headers});
+      const ce2 = await parse(re2);
+      effModels = ce2.models || [];
+    } else {
+      rawModels = c.models;
+      effModels = ce.models || [];
+    }
+    const provs = [...new Set(rawModels.map(m => m.provider).filter(Boolean))].sort();
     const sel = document.getElementById('provider');
     sel.innerHTML = '<option value="">全部 provider</option>' + provs.map(p => `<option>${p}</option>`).join('');
     render();
@@ -137,6 +164,12 @@ async function load() {
 document.getElementById('q').addEventListener('input', render);
 document.getElementById('provider').addEventListener('change', render);
 document.getElementById('refresh').addEventListener('click', load);
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  view = tab.dataset.view;
+  render();
+}));
 document.getElementById('manualKey').addEventListener('change', e => { manualKey = e.target.value.trim(); load(); });
 document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
   const k = th.dataset.k;

@@ -26,6 +26,9 @@ type ModelRow struct {
 	Input       []string `json:"input_modalities,omitempty"`
 	Output      []string `json:"output_modalities,omitempty"`
 	Visibility  string   `json:"visibility,omitempty"`
+	// MaxSource marks where the effective output limit came from:
+	// "upstream" or "fallback-context". Raw view leaves it empty.
+	MaxSource string `json:"max_source,omitempty"`
 }
 
 type Catalog struct {
@@ -241,4 +244,26 @@ func readConfigJSON(pluginYAML []byte) []byte {
 		return nil
 	}
 	return raw
+}
+
+// Effective applies the downstream client fallback: when the gateway omits
+// max_tokens, the model's own context window becomes the output bound
+// (mirrors the Pi openai-api-extension mapModel contract).
+func (s *Service) Effective() Catalog {
+	c := s.Last()
+	if c.Error != "" {
+		return c
+	}
+	out := make([]ModelRow, 0, len(c.Models))
+	for _, m := range c.Models {
+		if m.MaxTokens > 0 {
+			m.MaxSource = "upstream"
+		} else {
+			m.MaxTokens = m.Context
+			m.MaxSource = "fallback-context"
+		}
+		out = append(out, m)
+	}
+	c.Models = out
+	return c
 }

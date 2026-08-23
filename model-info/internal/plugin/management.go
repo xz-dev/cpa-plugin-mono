@@ -17,6 +17,7 @@ func (s *Service) ManagementRoutes() pluginapi.ManagementRegistrationResponse {
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/catalog", Description: "Fetch the current Codex-client model catalog with limits and reasoning levels"},
 			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/last", Description: "Last fetched catalog (cached)"},
+			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/effective", Description: "Effective limits after downstream fallback (context-window bound when max_tokens missing)"},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/index.html", Menu: "Model Info", Description: "查看所有模型的上下文窗口、输出上限、推理等级、模态"},
@@ -29,6 +30,8 @@ func (s *Service) HandleManagement(req pluginapi.ManagementRequest) pluginapi.Ma
 	switch {
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/last"):
 		return jsonResponse(http.StatusOK, s.Last())
+	case req.Method == http.MethodGet && strings.HasSuffix(path, "/effective"):
+		return jsonResponse(http.StatusOK, s.Effective())
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/catalog"):
 		c := s.FetchAndCache()
 		status := http.StatusOK
