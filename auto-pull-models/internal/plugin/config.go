@@ -22,6 +22,7 @@ type FileConfig struct {
 	ManagementKeyFile   string                    `json:"management_key_file"`
 	KeepExistingAliases bool                      `json:"keep_existing_aliases"`
 	ModelparamsURL      string                    `json:"modelparams_url,omitempty"`
+	ModelsdevURL        string                    `json:"modelsdev_url,omitempty"`
 	Providers           map[string]ProviderConfig `json:"providers"`
 }
 
@@ -32,6 +33,7 @@ type ProviderConfig struct {
 	Modelparams   bool     `json:"modelparams,omitempty"`
 	UpstreamMeta  bool     `json:"upstream_meta,omitempty"`
 	CodexManifest bool     `json:"codex_manifest,omitempty"`
+	Modelsdev     bool     `json:"modelsdev,omitempty"`
 }
 
 type compiledProvider struct {
@@ -42,6 +44,7 @@ type compiledProvider struct {
 	Modelparams   bool
 	UpstreamMeta  bool
 	CodexManifest bool
+	Modelsdev     bool
 }
 
 type runtimeConfig struct {
@@ -51,6 +54,7 @@ type runtimeConfig struct {
 	ManagementKeyFile   string
 	KeepExistingAliases bool
 	ModelparamsURL      string
+	ModelsdevURL        string
 	Providers           []compiledProvider
 	Raw                 FileConfig
 }
@@ -104,6 +108,7 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 		ManagementKeyFile:   cfg.ManagementKeyFile,
 		KeepExistingAliases: cfg.KeepExistingAliases,
 		ModelparamsURL:      strings.TrimSpace(cfg.ModelparamsURL),
+		ModelsdevURL:        strings.TrimSpace(cfg.ModelsdevURL),
 		Raw:                 cfg,
 	}
 
@@ -126,6 +131,7 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 			Modelparams:   spec.Modelparams,
 			UpstreamMeta:  spec.UpstreamMeta,
 			CodexManifest: spec.CodexManifest,
+			Modelsdev:     spec.Modelsdev,
 		}
 		for i, pat := range spec.Patterns {
 			pat = strings.TrimSpace(pat)

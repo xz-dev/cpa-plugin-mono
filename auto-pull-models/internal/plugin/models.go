@@ -13,6 +13,9 @@ type upstreamEntry struct {
 	Input   []string
 	Output  []string
 	Context int
+	// MaxTokens is the upstream-declared output limit (Codex manifest
+	// max_tokens, OpenRouter top_provider.max_completion_tokens).
+	MaxTokens int
 }
 
 func parseUpstreamModels(body []byte) ([]string, error) {
@@ -82,11 +85,15 @@ func decodeUpstreamItem(raw json.RawMessage) (upstreamEntry, bool) {
 		Slug                     string   `json:"slug"`
 		Context                  float64  `json:"context_length"`
 		ContextWindow            float64  `json:"context_window"`
+		MaxTokens                float64  `json:"max_tokens"`
 		InputModalities          []string `json:"input_modalities"`
 		OutputModalities         []string `json:"output_modalities"`
 		SupportedReasoningLevels []struct {
 			Effort string `json:"effort"`
 		} `json:"supported_reasoning_levels"`
+		TopProvider struct {
+			MaxCompletionTokens float64 `json:"max_completion_tokens"`
+		} `json:"top_provider"`
 		Architecture struct {
 			Input  []string `json:"input_modalities"`
 			Output []string `json:"output_modalities"`
@@ -116,6 +123,11 @@ func decodeUpstreamItem(raw json.RawMessage) (upstreamEntry, bool) {
 	}
 	if m.ContextWindow > 0 {
 		entry.Context = int(m.ContextWindow)
+	}
+	if m.MaxTokens > 0 {
+		entry.MaxTokens = int(m.MaxTokens)
+	} else if m.TopProvider.MaxCompletionTokens > 0 {
+		entry.MaxTokens = int(m.TopProvider.MaxCompletionTokens)
 	}
 	if len(m.InputModalities) > 0 {
 		entry.Input = m.InputModalities

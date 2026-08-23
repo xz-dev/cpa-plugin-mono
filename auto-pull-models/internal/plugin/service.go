@@ -13,10 +13,13 @@ type Service struct {
 	transport Transport
 	stop      chan struct{}
 	last      SyncReport
+	// enriched holds the per-provider registry metadata (limits/thinking/
+	// modalities) served through model.static / model.for_auth.
+	enriched map[string][]enrichedModel
 }
 
 func New(t Transport) *Service {
-	return &Service{transport: t}
+	return &Service{transport: t, enriched: map[string][]enrichedModel{}}
 }
 
 func (s *Service) Configure(pluginYAML []byte) error {
@@ -37,6 +40,7 @@ func (s *Service) Configure(pluginYAML []byte) error {
 	s.mu.Lock()
 	s.cfg = cfg
 	s.jsonPath = path
+	s.enriched = map[string][]enrichedModel{}
 	s.mu.Unlock()
 	s.restartTicker()
 	return nil
@@ -121,7 +125,8 @@ func (s *Service) restartTicker() {
 }
 
 func (s *Service) loop(interval time.Duration, stop chan struct{}) {
-	timer := time.NewTimer(interval)
+	// First tick fires immediately so the enriched snapshot is warm at boot.
+	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		select {

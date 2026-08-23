@@ -6,3 +6,4 @@
 *.dll
 *.h
 *.test
+.serena/

@@ -34,6 +34,19 @@ type SyncReport struct {
 	Error     string           `json:"error,omitempty"`
 }
 
+// enrichedModel is the resolved registry metadata for one model:
+// upstream values win, models.dev fills only the gaps.
+type enrichedModel struct {
+	ID          string
+	Name        string
+	DisplayName string
+	Context     int
+	MaxOutput   int
+	Thinking    []string
+	Input       []string
+	Output      []string
+}
+
 type CompatSummary struct {
 	Name       string `json:"name"`
 	BaseURL    string `json:"base_url"`
@@ -72,14 +85,25 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 	var catalog *modelparamsCatalog
 	var catalogErr error
 	needCatalog := false
+	var devCatalog *modelsdevCatalog
+	var devErr error
+	needDev := false
 	for _, spec := range cfg.Providers {
-		if onlyProvider != "" && spec.Name != onlyProvider {
+		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
 			continue
 		}
 		if spec.Enabled && spec.Modelparams {
 			needCatalog = true
+		}
+		if spec.Enabled && spec.Modelsdev {
+			needDev = true
+		}
+		if spec.Enabled {
 			break
 		}
+	}
+	if needDev {
+		devCatalog, devErr = s.fetchModelsdevCatalog(cfg.ModelsdevURL)
 	}
 	if needCatalog {
 		catalog, catalogErr = s.fetchModelparamsCatalog(cfg.ModelparamsURL)
@@ -96,7 +120,7 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 	}
 
 	for _, spec := range cfg.Providers {
-		if onlyProvider != "" && spec.Name != onlyProvider {
+		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
 			continue
 		}
 		res := ProviderResult{Name: spec.Name, Enabled: spec.Enabled, DryRun: dryRun}
@@ -172,9 +196,13 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 				}
 			}
 		}
+		enriched := buildEnriched(merged, byID, devCatalog, devErr)
 		res.Written = len(merged)
 		if modelsEqual(host.Models, merged) {
 			res.Unchanged = true
+			if !dryRun {
+				s.setEnriched(spec.Name, enriched)
+			}
 			report.Providers = append(report.Providers, res)
 			continue
 		}
@@ -188,6 +216,7 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			report.Providers = append(report.Providers, res)
 			continue
 		}
+		s.setEnriched(spec.Name, enriched)
 		report.Providers = append(report.Providers, res)
 	}
 	if onlyProvider != "" && len(report.Providers) == 0 {
@@ -321,4 +350,64 @@ func sample(ids []string, n int) []string {
 		return append([]string(nil), ids...)
 	}
 	return append([]string(nil), ids[:n]...)
+}
+
+// buildEnriched resolves registry metadata per model. Field-level priority:
+// upstream catalog first, then models.dev fills only the missing gaps.
+func buildEnriched(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error) []enrichedModel {
+	out := make([]enrichedModel, 0, len(models))
+	for _, m := range models {
+		e := byID[m.Name]
+		entry := enrichedModel{
+			ID:          m.Alias,
+			Name:        m.Name,
+			DisplayName: m.DisplayName,
+		}
+		if entry.ID == "" {
+			entry.ID = m.Name
+		}
+		var devEntry modelsdevModel
+		var devOK bool
+		if devErr == nil {
+			devEntry, devOK = dev.lookup(m.Name)
+		}
+		if e.Context > 0 {
+			entry.Context = e.Context
+		} else if devOK {
+			entry.Context = devEntry.Context
+		}
+		if e.MaxTokens > 0 {
+			entry.MaxOutput = e.MaxTokens
+		} else if devOK {
+			entry.MaxOutput = devEntry.MaxOut
+		}
+		if m.Thinking != nil {
+			entry.Thinking = m.Thinking.Levels
+		}
+		if len(m.InputModalities) > 0 {
+			entry.Input = m.InputModalities
+		} else if len(e.Input) > 0 {
+			entry.Input = cpaModalities(e.Input)
+		} else if devOK {
+			entry.Input = cpaModalities(devEntry.Input)
+		}
+		if len(m.OutputModalities) > 0 {
+			entry.Output = m.OutputModalities
+		} else if len(e.Output) > 0 {
+			entry.Output = cpaModalities(e.Output)
+		} else if devOK {
+			entry.Output = cpaModalities(devEntry.Output)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func (s *Service) setEnriched(provider string, models []enrichedModel) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.enriched == nil {
+		s.enriched = map[string][]enrichedModel{}
+	}
+	s.enriched[provider] = models
 }

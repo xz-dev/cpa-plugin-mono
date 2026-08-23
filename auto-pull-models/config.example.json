@@ -16,7 +16,8 @@
       "mode": "exclude",
       "patterns": [],
       "codex_manifest": true,
-      "upstream_meta": true
+      "upstream_meta": true,
+      "modelsdev": true
     }
   }
 }
