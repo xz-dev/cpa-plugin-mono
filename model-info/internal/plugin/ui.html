@@ -96,6 +96,7 @@ function mgmtKey() { return manualKey || readHostKey(); }
 const api = location.origin + '/v0/management/plugins/model-info';
 
 let rawModels = [], effModels = [], view = 'effective';
+let sortKey = 'id', sortAsc = true;
 function models() { return view === 'raw' ? rawModels : effModels; }
 const rows = document.getElementById('rows'), status = document.getElementById('status');
 
