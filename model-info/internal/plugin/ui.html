@@ -32,6 +32,7 @@
   <input id="q" placeholder="搜索 id / 名称 / provider…">
   <select id="provider"><option value="">全部 provider</option></select>
   <button id="refresh">刷新</button>
+  <input id="manualKey" type="password" placeholder="management key（宿主未存时手填）">
 </div>
 <div id="status">加载中…</div>
 <table><thead><tr>
@@ -40,17 +41,48 @@
   <th>推理等级</th><th>输入</th><th>输出</th>
 </tr></thead><tbody id="rows"></tbody></table>
 <script>
-// Same host-auth discovery as auto-pull-models / cpa-key-policy: read the
-// Management Center's saved management key from same-origin localStorage.
-function mgmtKey() {
-  try {
-    const raw = localStorage.getItem('cli-proxy-auth');
-    if (!raw) return '';
-    const n = JSON.parse(raw);
-    const state = n.state ?? n;
-    return typeof state.managementKey === 'string' ? state.managementKey.trim() : '';
-  } catch { return ''; }
+// Host auth: same obfuscation scheme as auto-pull-models / cpa-key-policy.
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const STORAGE_KEY_AUTH = "cli-proxy-auth";
+let manualKey = "";
+function encodeText(t) { return new TextEncoder().encode(t); }
+function decodeText(b) { return new TextDecoder().decode(b); }
+function getKeyBytes() {
+  try { return encodeText(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`); }
+  catch { return encodeText(SECRET_SALT); }
 }
+function xorBytes(data, key) {
+  const out = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) out[i] = data[i] ^ key[i % key.length];
+  return out;
+}
+function fromBase64(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function deobfuscate(payload) {
+  if (!payload || !payload.startsWith(ENC_PREFIX)) return payload;
+  try { return decodeText(xorBytes(fromBase64(payload.slice(ENC_PREFIX.length)), getKeyBytes())); }
+  catch { return payload; }
+}
+function inIframe() { try { return window.self !== window.top; } catch { return false; } }
+function readHostKey() {
+  if (!inIframe()) return "";
+  let raw;
+  try { raw = localStorage.getItem(STORAGE_KEY_AUTH); } catch { return ""; }
+  if (!raw) return "";
+  let plain;
+  try { plain = deobfuscate(raw); } catch { return ""; }
+  try {
+    const n = JSON.parse(plain);
+    const state = n.state ?? n;
+    return typeof state.managementKey === "string" ? state.managementKey.trim() : "";
+  } catch { return ""; }
+}
+function mgmtKey() { return manualKey || readHostKey(); }
 const api = location.origin + '/v0/management/plugins/model-info';
 
 let models = [], sortKey = 'id', sortAsc = true;
@@ -88,6 +120,7 @@ async function load() {
     const headers = {Accept: 'application/json'};
     const key = mgmtKey();
     if (key) headers.Authorization = 'Bearer ' + key;
+    else { status.textContent = inIframe() ? '未读到 Management Center 密钥，请手填 management key' : '请手填 management key'; return; }
     const r = await fetch(api + '/catalog', {headers});
     const text = await r.text();
     let c;
@@ -104,6 +137,7 @@ async function load() {
 document.getElementById('q').addEventListener('input', render);
 document.getElementById('provider').addEventListener('change', render);
 document.getElementById('refresh').addEventListener('click', load);
+document.getElementById('manualKey').addEventListener('change', e => { manualKey = e.target.value.trim(); load(); });
 document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
   const k = th.dataset.k;
   if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = true; }
