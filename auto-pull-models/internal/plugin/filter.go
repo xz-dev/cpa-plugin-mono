@@ -1,17 +1,17 @@
 package plugin
 
 type ThinkingConfig struct {
-	Levels []string `json:"levels,omitempty"`
+	Levels []string `json:"levels,omitempty" yaml:"levels,omitempty"`
 }
 
 type ModelRef struct {
-	Name             string          `json:"name"`
-	Alias            string          `json:"alias,omitempty"`
-	DisplayName      string          `json:"display-name,omitempty"`
-	MaxContextLength int             `json:"max-context-length,omitempty"`
-	Thinking         *ThinkingConfig `json:"thinking,omitempty"`
-	InputModalities  []string        `json:"input-modalities,omitempty"`
-	OutputModalities []string        `json:"output-modalities,omitempty"`
+	Name             string          `json:"name" yaml:"name"`
+	Alias            string          `json:"alias,omitempty" yaml:"alias,omitempty"`
+	DisplayName      string          `json:"display-name,omitempty" yaml:"display-name,omitempty"`
+	MaxContextLength int             `json:"max-context-length,omitempty" yaml:"max-context-length,omitempty"`
+	Thinking         *ThinkingConfig `json:"thinking,omitempty" yaml:"thinking,omitempty"`
+	InputModalities  []string        `json:"input-modalities,omitempty" yaml:"input-modalities,omitempty"`
+	OutputModalities []string        `json:"output-modalities,omitempty" yaml:"output-modalities,omitempty"`
 }
 
 func matchAny(id string, patterns compiledProvider) bool {

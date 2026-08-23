@@ -105,6 +105,8 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 	for i, p := range list {
 		indexByName[strings.TrimSpace(p.Name)] = i
 	}
+	pendingWrites := map[string][]ModelRef{}
+	fileMode := cfg.WriteMode == WriteModeFile
 
 	for _, spec := range cfg.Providers {
 		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
@@ -194,6 +196,11 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			report.Providers = append(report.Providers, res)
 			continue
 		}
+		if fileMode {
+			pendingWrites[spec.Name] = merged
+			report.Providers = append(report.Providers, res)
+			continue
+		}
 		if err := s.patchCompatModels(key, idx, merged); err != nil {
 			res.Error = err.Error()
 			report.OK = false
@@ -201,6 +208,12 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			continue
 		}
 		report.Providers = append(report.Providers, res)
+	}
+	if !dryRun && len(pendingWrites) > 0 {
+		if err := writeModelsFile(cfg.ConfigPath, pendingWrites); err != nil {
+			report.OK = false
+			report.Error = "file write: " + err.Error()
+		}
 	}
 	if onlyProvider != "" && len(report.Providers) == 0 {
 		report.OK = false

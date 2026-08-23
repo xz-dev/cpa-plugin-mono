@@ -13,6 +13,16 @@ import (
 const (
 	ModeInclude = "include"
 	ModeExclude = "exclude"
+
+	// WriteModeAPI writes via PATCH /v0/management/openai-compatibility.
+	WriteModeAPI = "api"
+	// WriteModeFile writes config.yaml directly with tmp+rename so the CPA
+	// file watcher only ever sees complete files. Management PATCH truncates
+	// the whole config in place (os.Create + write), which can race the
+	// watcher into reading a partial YAML and permanently disabling the
+	// management routes. File mode mirrors how CPA's own auth-file writes
+	// stay safe.
+	WriteModeFile = "file"
 )
 
 type FileConfig struct {
@@ -23,6 +33,8 @@ type FileConfig struct {
 	KeepExistingAliases bool                      `json:"keep_existing_aliases"`
 	ModelparamsURL      string                    `json:"modelparams_url,omitempty"`
 	ModelsdevURL        string                    `json:"modelsdev_url,omitempty"`
+	WriteMode           string                    `json:"write_mode"`
+	ConfigPath          string                    `json:"config_path"`
 	Providers           map[string]ProviderConfig `json:"providers"`
 }
 
@@ -55,6 +67,8 @@ type runtimeConfig struct {
 	KeepExistingAliases bool
 	ModelparamsURL      string
 	ModelsdevURL        string
+	WriteMode           string
+	ConfigPath          string
 	Providers           []compiledProvider
 	Raw                 FileConfig
 }
@@ -101,6 +115,15 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 		interval = parsed
 	}
 
+	writeMode := strings.ToLower(strings.TrimSpace(cfg.WriteMode))
+	if writeMode == "" {
+		writeMode = WriteModeAPI
+	}
+	if writeMode != WriteModeAPI && writeMode != WriteModeFile {
+		return runtimeConfig{}, fmt.Errorf("write_mode must be api or file")
+	}
+	cfg.ConfigPath = strings.TrimSpace(cfg.ConfigPath)
+
 	out := runtimeConfig{
 		Interval:            interval,
 		ManagementBaseURL:   cfg.ManagementBaseURL,
@@ -109,6 +132,8 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 		KeepExistingAliases: cfg.KeepExistingAliases,
 		ModelparamsURL:      strings.TrimSpace(cfg.ModelparamsURL),
 		ModelsdevURL:        strings.TrimSpace(cfg.ModelsdevURL),
+		WriteMode:           writeMode,
+		ConfigPath:          cfg.ConfigPath,
 		Raw:                 cfg,
 	}
 

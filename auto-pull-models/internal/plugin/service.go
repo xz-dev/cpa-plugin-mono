@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,12 @@ func (s *Service) Configure(pluginYAML []byte) error {
 	s.cfg = cfg
 	s.jsonPath = path
 	s.mu.Unlock()
+	if s.cfg.ConfigPath == "" {
+		// plugins/<name>/config.json -> ../../config.yaml (CPA layout).
+		s.mu.Lock()
+		s.cfg.ConfigPath = filepath.Join(filepath.Dir(path), "..", "..", "config.yaml")
+		s.mu.Unlock()
+	}
 	s.restartTicker()
 	return nil
 }

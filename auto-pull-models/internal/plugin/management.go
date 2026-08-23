@@ -88,6 +88,8 @@ func (s *Service) statusPayload() map[string]any {
 	return map[string]any{
 		"config_file": s.JSONPath(),
 		"interval":    cfg.Raw.Interval,
+		"write_mode":  cfg.WriteMode,
+		"config_path": cfg.ConfigPath,
 		"providers":   names,
 		"has_key":     resolveManagementKey(cfg) != "",
 		"last":        s.Last(),
