@@ -40,6 +40,19 @@
   <th>推理等级</th><th>输入</th><th>输出</th>
 </tr></thead><tbody id="rows"></tbody></table>
 <script>
+// Same host-auth discovery as auto-pull-models / cpa-key-policy: read the
+// Management Center's saved management key from same-origin localStorage.
+function mgmtKey() {
+  try {
+    const raw = localStorage.getItem('cli-proxy-auth');
+    if (!raw) return '';
+    const n = JSON.parse(raw);
+    const state = n.state ?? n;
+    return typeof state.managementKey === 'string' ? state.managementKey.trim() : '';
+  } catch { return ''; }
+}
+const api = location.origin + '/v0/management/plugins/model-info';
+
 let models = [], sortKey = 'id', sortAsc = true;
 const rows = document.getElementById('rows'), status = document.getElementById('status');
 
@@ -72,8 +85,13 @@ function render() {
 async function load() {
   status.textContent = '加载中…';
   try {
-    const r = await fetch('catalog');
-    const c = await r.json();
+    const headers = {Accept: 'application/json'};
+    const key = mgmtKey();
+    if (key) headers.Authorization = 'Bearer ' + key;
+    const r = await fetch(api + '/catalog', {headers});
+    const text = await r.text();
+    let c;
+    try { c = JSON.parse(text); } catch { throw new Error('HTTP ' + r.status + ': ' + text.slice(0, 120)); }
     if (c.error) { status.textContent = '错误: ' + c.error; return; }
     models = c.models || [];
     const provs = [...new Set(models.map(m => m.provider).filter(Boolean))].sort();
