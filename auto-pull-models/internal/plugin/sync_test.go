@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,7 @@ func TestSyncConsumesCodexManifest(t *testing.T) {
 		]}`,
 	}
 	service := New(transport)
+	service.jsonPath = filepath.Join(t.TempDir(), "config.json")
 	service.cfg = runtimeConfig{
 		ManagementBaseURL:   "http://cpa:8317",
 		KeepExistingAliases: true,

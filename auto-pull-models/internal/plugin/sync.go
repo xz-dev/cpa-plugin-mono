@@ -34,19 +34,6 @@ type SyncReport struct {
 	Error     string           `json:"error,omitempty"`
 }
 
-// enrichedModel is the resolved registry metadata for one model:
-// upstream values win, models.dev fills only the gaps.
-type enrichedModel struct {
-	ID          string
-	Name        string
-	DisplayName string
-	Context     int
-	MaxOutput   int
-	Thinking    []string
-	Input       []string
-	Output      []string
-}
-
 type CompatSummary struct {
 	Name       string `json:"name"`
 	BaseURL    string `json:"base_url"`
@@ -196,13 +183,10 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 				}
 			}
 		}
-		enriched := buildEnriched(merged, byID, devCatalog, devErr)
+		applyContextLimits(merged, byID, devCatalog, devErr, spec.Modelsdev)
 		res.Written = len(merged)
 		if modelsEqual(host.Models, merged) {
 			res.Unchanged = true
-			if !dryRun {
-				s.setEnriched(spec.Name, enriched)
-			}
 			report.Providers = append(report.Providers, res)
 			continue
 		}
@@ -216,7 +200,6 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			report.Providers = append(report.Providers, res)
 			continue
 		}
-		s.setEnriched(spec.Name, enriched)
 		report.Providers = append(report.Providers, res)
 	}
 	if onlyProvider != "" && len(report.Providers) == 0 {
@@ -240,6 +223,9 @@ func modelsEqual(a, b []ModelRef) bool {
 	}
 	for i := range a {
 		if a[i].Name != b[i].Name || a[i].Alias != b[i].Alias || a[i].DisplayName != b[i].DisplayName {
+			return false
+		}
+		if a[i].MaxContextLength != b[i].MaxContextLength {
 			return false
 		}
 		if !thinkingEqual(a[i].Thinking, b[i].Thinking) {
@@ -352,62 +338,25 @@ func sample(ids []string, n int) []string {
 	return append([]string(nil), ids[:n]...)
 }
 
-// buildEnriched resolves registry metadata per model. Field-level priority:
-// upstream catalog first, then models.dev fills only the missing gaps.
-func buildEnriched(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error) []enrichedModel {
-	out := make([]enrichedModel, 0, len(models))
-	for _, m := range models {
-		e := byID[m.Name]
-		entry := enrichedModel{
-			ID:          m.Alias,
-			Name:        m.Name,
-			DisplayName: m.DisplayName,
+// applyContextLimits writes max-context-length into each config model:
+// upstream-declared context wins, models.dev fills only the gaps. CPA maps
+// this field to the Codex catalog context_window.
+func applyContextLimits(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error, enabled bool) {
+	if !enabled {
+		return
+	}
+	for i := range models {
+		if models[i].MaxContextLength > 0 {
+			continue
 		}
-		if entry.ID == "" {
-			entry.ID = m.Name
+		if e, ok := byID[models[i].Name]; ok && e.Context > 0 {
+			models[i].MaxContextLength = e.Context
+			continue
 		}
-		var devEntry modelsdevModel
-		var devOK bool
 		if devErr == nil {
-			devEntry, devOK = dev.lookup(m.Name)
+			if entry, ok := dev.lookup(models[i].Name); ok && entry.Context > 0 {
+				models[i].MaxContextLength = entry.Context
+			}
 		}
-		if e.Context > 0 {
-			entry.Context = e.Context
-		} else if devOK {
-			entry.Context = devEntry.Context
-		}
-		if e.MaxTokens > 0 {
-			entry.MaxOutput = e.MaxTokens
-		} else if devOK {
-			entry.MaxOutput = devEntry.MaxOut
-		}
-		if m.Thinking != nil {
-			entry.Thinking = m.Thinking.Levels
-		}
-		if len(m.InputModalities) > 0 {
-			entry.Input = m.InputModalities
-		} else if len(e.Input) > 0 {
-			entry.Input = cpaModalities(e.Input)
-		} else if devOK {
-			entry.Input = cpaModalities(devEntry.Input)
-		}
-		if len(m.OutputModalities) > 0 {
-			entry.Output = m.OutputModalities
-		} else if len(e.Output) > 0 {
-			entry.Output = cpaModalities(e.Output)
-		} else if devOK {
-			entry.Output = cpaModalities(devEntry.Output)
-		}
-		out = append(out, entry)
 	}
-	return out
-}
-
-func (s *Service) setEnriched(provider string, models []enrichedModel) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.enriched == nil {
-		s.enriched = map[string][]enrichedModel{}
-	}
-	s.enriched[provider] = models
 }

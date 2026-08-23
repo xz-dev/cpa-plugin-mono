@@ -1,8 +1,9 @@
 package plugin
 
 import (
-	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -14,18 +15,20 @@ type netError struct{ msg string }
 func (e *netError) Error() string { return e.msg }
 
 func (f fakeTransport) Do(method, url string, _ http.Header, _ []byte) (int, []byte, error) {
-	if strings.Contains(url, "/api-call") {
-		inner := `{"models":[{"slug":"zproxy/glm-5.3","context_window":272000,"max_tokens":131072,"supported_reasoning_levels":[{"effort":"low"},{"effort":"max"}]},{"slug":"gpt-x","context_window":1000}]}`
-		envelope, _ := json.Marshal(map[string]any{"status_code": 200, "body": inner})
-		return http.StatusOK, envelope, nil
+	if strings.Contains(url, "/v1/models") {
+		return http.StatusOK, []byte(`{"models":[{"slug":"zproxy/glm-5.3","context_window":272000,"max_tokens":131072,"supported_reasoning_levels":[{"effort":"low"},{"effort":"max"}]},{"slug":"gpt-x","context_window":1000}]}`), nil
 	}
 	return 0, nil, &netError{msg: "unexpected " + url}
 }
 
 func TestFetchParsesCatalog(t *testing.T) {
 	s := New(fakeTransport{})
-	_ = s.Configure([]byte(`{"management_key_env":"MI_TEST_KEY"}`))
-	t.Setenv("MI_TEST_KEY", "mgmt-key")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"api_key_env":"MI_TEST_KEY"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Configure([]byte("config_file: " + cfgPath))
+	t.Setenv("MI_TEST_KEY", "sk-test")
 	c := s.FetchAndCache()
 	if c.Error != "" || c.Count != 2 {
 		t.Fatalf("catalog=%+v", c)

@@ -20,7 +20,6 @@ type registration struct {
 
 type registrationCapability struct {
 	ManagementAPI bool `json:"management_api"`
-	ModelProvider bool `json:"model_provider"`
 }
 
 func handleMethod(method string, request []byte) ([]byte, bool) {
@@ -56,16 +55,6 @@ func dispatch(method string, request []byte) (any, error) {
 			return nil, err
 		}
 		return pluginService.HandleManagement(req), nil
-	case pluginabi.MethodModelStatic:
-		return pluginService.StaticModels(), nil
-	case pluginabi.MethodModelForAuth:
-		var req pluginapi.AuthModelRequest
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &req); err != nil {
-				return nil, err
-			}
-		}
-		return pluginService.ModelsForAuth(req), nil
 	default:
 		return nil, &httpError{status: http.StatusNotImplemented, msg: "unknown plugin method: " + method}
 	}
@@ -90,7 +79,7 @@ func pluginRegistration() registration {
 				{Name: "config_file", Type: pluginapi.ConfigFieldTypeString, Description: "Path to auto-pull-models JSON config. Default plugins/auto-pull-models/config.json"},
 			},
 		},
-		Capabilities: registrationCapability{ManagementAPI: true, ModelProvider: true},
+		Capabilities: registrationCapability{ManagementAPI: true},
 	}
 }
 

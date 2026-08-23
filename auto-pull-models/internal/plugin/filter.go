@@ -8,6 +8,7 @@ type ModelRef struct {
 	Name             string          `json:"name"`
 	Alias            string          `json:"alias,omitempty"`
 	DisplayName      string          `json:"display-name,omitempty"`
+	MaxContextLength int             `json:"max-context-length,omitempty"`
 	Thinking         *ThinkingConfig `json:"thinking,omitempty"`
 	InputModalities  []string        `json:"input-modalities,omitempty"`
 	OutputModalities []string        `json:"output-modalities,omitempty"`
@@ -70,6 +71,7 @@ func mergeModels(existing []ModelRef, ids []string, keepAliases bool) []ModelRef
 				ref.Alias = prev.Alias
 			}
 			ref.DisplayName = prev.DisplayName
+			ref.MaxContextLength = prev.MaxContextLength
 			ref.Thinking = prev.Thinking
 			ref.InputModalities = prev.InputModalities
 			ref.OutputModalities = prev.OutputModalities

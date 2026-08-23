@@ -75,3 +75,28 @@ func TestDecodeUpstreamMaxTokens(t *testing.T) {
 		t.Fatalf("openrouter entry: %+v", byID["or/model"])
 	}
 }
+
+func TestApplyContextLimitsUpstreamWinsModelsdevFills(t *testing.T) {
+	byID := map[string]upstreamEntry{"glm-5.3": {ID: "glm-5.3", Context: 272000}}
+	dev, _ := parseModelsdevCatalog([]byte(`{"zai-org":{"models":{"glm-5.3":{"id":"glm-5.3","limit":{"context":1048576,"output":131072}}}},
+	"openai":{"models":{"gpt-5.6":{"id":"gpt-5.6","limit":{"context":400000,"output":100000}}}}}`))
+	models := []ModelRef{{Name: "glm-5.3"}, {Name: "gpt-5.6"}, {Name: "unknown-model"}}
+
+	applyContextLimits(models, byID, dev, nil, true)
+
+	if models[0].MaxContextLength != 272000 {
+		t.Fatalf("upstream ctx must win, got %d", models[0].MaxContextLength)
+	}
+	if models[1].MaxContextLength != 400000 {
+		t.Fatalf("models.dev must fill gap, got %d", models[1].MaxContextLength)
+	}
+	if models[2].MaxContextLength != 0 {
+		t.Fatalf("unknown model stays 0, got %d", models[2].MaxContextLength)
+	}
+
+	off := []ModelRef{{Name: "gpt-5.6"}}
+	applyContextLimits(off, byID, dev, nil, false)
+	if off[0].MaxContextLength != 0 {
+		t.Fatal("modelsdev disabled must not write ctx")
+	}
+}

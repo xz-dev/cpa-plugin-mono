@@ -46,6 +46,11 @@ type Config struct {
 	ManagementBaseURL string `json:"management_base_url"`
 	ManagementKeyEnv  string `json:"management_key_env"`
 	ManagementKeyFile string `json:"management_key_file"`
+	// APIKey authorizes the inner /v1/models request (CPA static api-key).
+	// Env/APIKeyFile override this plaintext field.
+	APIKey     string `json:"api_key,omitempty"`
+	APIKeyEnv  string `json:"api_key_env,omitempty"`
+	APIKeyFile string `json:"api_key_file,omitempty"`
 }
 
 func New(t Transport) *Service {
@@ -54,17 +59,18 @@ func New(t Transport) *Service {
 
 func (s *Service) Configure(pluginYAML []byte) error {
 	cfg := Config{ManagementBaseURL: "http://127.0.0.1:8317"}
-	var wrapper struct {
-		ManagementBaseURL string `json:"management_base_url"`
-		ManagementKeyEnv  string `json:"management_key_env"`
-		ManagementKeyFile string `json:"management_key_file"`
+	var wrapper Config
+	if raw := readConfigJSON(pluginYAML); len(raw) > 0 {
+		_ = json.Unmarshal(raw, &wrapper)
 	}
-	_ = json.Unmarshal(pluginYAML, &wrapper)
 	if strings.TrimSpace(wrapper.ManagementBaseURL) != "" {
 		cfg.ManagementBaseURL = strings.TrimRight(strings.TrimSpace(wrapper.ManagementBaseURL), "/")
 	}
 	cfg.ManagementKeyEnv = strings.TrimSpace(wrapper.ManagementKeyEnv)
 	cfg.ManagementKeyFile = strings.TrimSpace(wrapper.ManagementKeyFile)
+	cfg.APIKey = strings.TrimSpace(wrapper.APIKey)
+	cfg.APIKeyEnv = strings.TrimSpace(wrapper.APIKeyEnv)
+	cfg.APIKeyFile = strings.TrimSpace(wrapper.APIKeyFile)
 	s.mu.Lock()
 	s.cfg = cfg
 	s.mu.Unlock()
@@ -91,47 +97,33 @@ func (s *Service) Fetch() Catalog {
 	s.mu.Unlock()
 
 	catalog := Catalog{At: time.Now().UTC()}
-	key := s.resolveKey(cfg)
-	if key == "" {
-		catalog.Error = "management key unavailable (set management_key_file/env)"
+	apiKey := s.resolveAPIKey(cfg)
+	if apiKey == "" {
+		catalog.Error = "api key unavailable (set api_key / api_key_env / api_key_file in model-info config)"
 		return catalog
 	}
-
-	req, _ := json.Marshal(map[string]any{
-		"method": http.MethodGet,
-		"url":    cfg.ManagementBaseURL + "/v1/models?client_version=1.0.0",
-	})
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+key)
-	headers.Set("Content-Type", "application/json")
-	status, body, err := s.transport.Do(http.MethodPost, cfg.ManagementBaseURL+"/v0/management/api-call", headers, req)
-	if err != nil {
-		catalog.Error = err.Error()
-		return catalog
+	headers.Set("Authorization", "Bearer "+apiKey)
+	// During host boot the API server may not be listening yet; poll briefly.
+	for attempt := 0; attempt < 5; attempt++ {
+		status, body, err := s.transport.Do(http.MethodGet, cfg.ManagementBaseURL+"/v1/models?client_version=1.0.0", headers, nil)
+		if err == nil && status == http.StatusOK {
+			models, perr := parseCatalog(body)
+			if perr == nil {
+				catalog.Models = models
+				catalog.Count = len(models)
+				return catalog
+			}
+			catalog.Error = perr.Error()
+			return catalog
+		}
+		if err == nil && status != http.StatusServiceUnavailable && status != http.StatusNotFound {
+			catalog.Error = fmt.Sprintf("catalog HTTP %d: %s", status, truncate(body, 200))
+			return catalog
+		}
+		time.Sleep(2 * time.Second)
 	}
-	if status < 200 || status >= 300 {
-		catalog.Error = fmt.Sprintf("api-call HTTP %d: %s", status, truncate(body, 200))
-		return catalog
-	}
-	var parsed struct {
-		StatusCode int    `json:"status_code"`
-		Body       string `json:"body"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		catalog.Error = "decode api-call: " + err.Error()
-		return catalog
-	}
-	if parsed.StatusCode < 200 || parsed.StatusCode >= 300 {
-		catalog.Error = fmt.Sprintf("catalog HTTP %d", parsed.StatusCode)
-		return catalog
-	}
-	models, err := parseCatalog([]byte(parsed.Body))
-	if err != nil {
-		catalog.Error = err.Error()
-		return catalog
-	}
-	catalog.Models = models
-	catalog.Count = len(models)
+	catalog.Error = "catalog endpoint unreachable"
 	return catalog
 }
 
@@ -194,16 +186,33 @@ func parseCatalog(raw []byte) ([]ModelRow, error) {
 	return out, nil
 }
 
-func (s *Service) resolveKey(cfg Config) string {
-	if cfg.ManagementKeyFile != "" {
-		if raw, err := os.ReadFile(cfg.ManagementKeyFile); err == nil {
-			if key := strings.TrimSpace(string(raw)); key != "" {
+func (s *Service) resolveAPIKey(cfg Config) string {
+	for _, candidate := range []struct {
+		value string
+		kind  string
+	}{
+		{cfg.APIKey, "plain"},
+		{cfg.APIKeyFile, "file"},
+		{cfg.APIKeyEnv, "env"},
+	} {
+		if candidate.value == "" {
+			continue
+		}
+		if candidate.kind == "file" {
+			if raw, err := os.ReadFile(candidate.value); err == nil {
+				if key := strings.TrimSpace(string(raw)); key != "" {
+					return key
+				}
+			}
+			continue
+		}
+		if candidate.kind == "env" {
+			if key := strings.TrimSpace(os.Getenv(candidate.value)); key != "" {
 				return key
 			}
+			continue
 		}
-	}
-	if cfg.ManagementKeyEnv != "" {
-		return strings.TrimSpace(os.Getenv(cfg.ManagementKeyEnv))
+		return candidate.value
 	}
 	return ""
 }
@@ -213,4 +222,23 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "..."
+}
+
+// readConfigJSON resolves the plugin YAML's config_file hint and returns the
+// JSON config file contents. Plugin YAML is not JSON; parse just the hint.
+func readConfigJSON(pluginYAML []byte) []byte {
+	path := "plugins/model-info/config.json"
+	for _, line := range strings.Split(string(pluginYAML), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "config_file:") {
+			if v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "config_file:")), `"'`); v != "" {
+				path = v
+			}
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return raw
 }

@@ -83,21 +83,15 @@ JSON（默认 `plugins/auto-pull-models/config.json`）：
 
 `providers` 里出现的名字必须已经在 CPA 的 AI Providers / `openai-compatibility` 里存在。插件用该 provider 的 `auth-index` 走管理 API `api-call` 去拉上游模型，不会把 API key 写进 JSON。
 
-## 模型元数据（model provider）
+## 上下文窗口
 
-插件向 CPA 声明 `model_provider` 能力，接管所管理 openai-compatibility
-auth 的模型注册（`model.for_auth`）：
+勾选 `modelsdev` 的 provider，同步时会把每模型的 `max-context-length`
+写入 config（CPA 原生字段，映射到 Codex 目录 `context_window`）：
+上游目录声明的上下文优先，models.dev 只补缺口；两者都没有则留空。
 
-- `max_tokens`（MaxCompletionTokens）只能经插件 ModelInfo 写入，CPA
-  config 没有对应字段；这是 Codex 目录 `max_tokens` 的唯一来源。
-- 字段级优先级：上游目录 > models.dev（勾选 `modelsdev` 时）；
-  `thinking.levels`：上游 > modelparams；模态：上游 > models.dev。
-- 不在配置里的 compat provider 自动降级（返回不匹配的 provider key），
-  CPA 原生注册完全不受影响。
-- 首次同步失败时同样降级，不会注册空模型列表。
-
-注意：management key 需要在 CPA 启动时即可读（env 或文件），否则
-`model.static` 拿不到模型，本能力在该次启动内不生效。
+注意：CPA config 没有输出上限（max_tokens/max-completion-tokens）字段，
+插件协议也无法覆盖 config 已声明的模型元数据，因此输出上限不在此插件
+职责内；下游客户端应在缺失时用上下文窗口兜底。
 
 ## WebUI
 
