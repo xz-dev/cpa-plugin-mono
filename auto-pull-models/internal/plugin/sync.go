@@ -120,7 +120,7 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			report.Providers = append(report.Providers, res)
 			continue
 		}
-		url := modelsURL(host.BaseURL)
+		url := modelsURL(host.BaseURL, spec.CodexManifest)
 		if url == "" {
 			res.Error = "provider 没有 base-url"
 			report.OK = false

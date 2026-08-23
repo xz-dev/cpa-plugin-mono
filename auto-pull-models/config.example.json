@@ -11,11 +11,12 @@
       "patterns": ["^openai/", "^anthropic/", "gpt-"],
       "upstream_meta": true
     },
-    "旋律": {
+    "ZCode": {
       "enabled": true,
-      "mode": "include",
-      "patterns": ["gpt-", "kimi-"],
-      "modelparams": true
+      "mode": "exclude",
+      "patterns": [],
+      "codex_manifest": true,
+      "upstream_meta": true
     }
   }
 }

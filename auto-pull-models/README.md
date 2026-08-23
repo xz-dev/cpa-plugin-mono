@@ -13,7 +13,7 @@ CPA 插件：按 **openai-compatibility provider 名字** 自动（或手动）�
 - 已有 `alias` 默认保留；新模型 alias 默认等于 id
 - 定时同步 + WebUI / Management API 立即同步
 
-不会改 API key、base-url、headers。默认只更新 `models` 的 name/alias。勾选 `modelparams` 时，会顺带写入 `thinking.levels`。
+不会改 API key、base-url、headers。默认只更新 `models` 的 name/alias。勾选 `upstream_meta` 或 `modelparams` 时，会顺带写入 `thinking.levels`。
 
 ## 配置
 
@@ -54,11 +54,12 @@ JSON（默认 `plugins/auto-pull-models/config.json`）：
       "mode": "exclude",
       "patterns": ["embed", "rerank", "-vl$"]
     },
-    "旋律": {
+    "ZCode": {
       "enabled": true,
-      "mode": "include",
-      "patterns": ["gpt-", "kimi-"],
-      "modelparams": true
+      "mode": "exclude",
+      "patterns": [],
+      "codex_manifest": true,
+      "upstream_meta": true
     }
   }
 }
@@ -74,7 +75,8 @@ JSON（默认 `plugins/auto-pull-models/config.json`）：
 | `providers.<name>.enabled` | 是否同步这个 openai-compatibility provider |
 | `providers.<name>.mode` | `include` 或 `exclude` |
 | `providers.<name>.patterns` | 正则列表；`include` 且列表为空 = 一个都不留；`exclude` 且列表为空 = 全留 |
-| `providers.<name>.upstream_meta` | `true` 时从这次拉取的上游 `/models` 读 `reasoning.supported_efforts`、`architecture.*modalities`（OpenRouter 目录自带，不再额外请求） |
+| `providers.<name>.codex_manifest` | `true` 时请求 `/models?client_version=1.0.0`，并按 Codex manifest 读取 `slug`、`supported_reasoning_levels`、`input_modalities`。仅对支持该协议的上游启用 |
+| `providers.<name>.upstream_meta` | `true` 时从这次拉取的上游目录读取 reasoning 档位和模态；支持 OpenRouter 与 Codex manifest，不再额外请求 |
 | `providers.<name>.modelparams` | `true` 时用 modelparams.dev Full catalog 填 `thinking.levels`。一次刷新只拉一次 catalog，所有勾选的渠道共用。若同时开了 `upstream_meta`，只补上游没给档位的模型 |
 
 `providers` 里出现的名字必须已经在 CPA 的 AI Providers / `openai-compatibility` 里存在。插件用该 provider 的 `auth-index` 走管理 API `api-call` 去拉上游模型，不会把 API key 写进 JSON。

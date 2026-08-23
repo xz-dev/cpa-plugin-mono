@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -76,9 +77,16 @@ func decodeUpstreamItem(raw json.RawMessage) (upstreamEntry, bool) {
 		return upstreamEntry{ID: id}, true
 	}
 	var m struct {
-		ID           string  `json:"id"`
-		Name         string  `json:"name"`
-		Context      float64 `json:"context_length"`
+		ID                       string   `json:"id"`
+		Name                     string   `json:"name"`
+		Slug                     string   `json:"slug"`
+		Context                  float64  `json:"context_length"`
+		ContextWindow            float64  `json:"context_window"`
+		InputModalities          []string `json:"input_modalities"`
+		OutputModalities         []string `json:"output_modalities"`
+		SupportedReasoningLevels []struct {
+			Effort string `json:"effort"`
+		} `json:"supported_reasoning_levels"`
 		Architecture struct {
 			Input  []string `json:"input_modalities"`
 			Output []string `json:"output_modalities"`
@@ -92,6 +100,9 @@ func decodeUpstreamItem(raw json.RawMessage) (upstreamEntry, bool) {
 	}
 	id := strings.TrimSpace(m.ID)
 	if id == "" {
+		id = strings.TrimSpace(m.Slug)
+	}
+	if id == "" {
 		id = strings.TrimSpace(m.Name)
 	}
 	if id == "" {
@@ -103,8 +114,23 @@ func decodeUpstreamItem(raw json.RawMessage) (upstreamEntry, bool) {
 		Output:  m.Architecture.Output,
 		Context: int(m.Context),
 	}
+	if m.ContextWindow > 0 {
+		entry.Context = int(m.ContextWindow)
+	}
+	if len(m.InputModalities) > 0 {
+		entry.Input = m.InputModalities
+	}
+	if len(m.OutputModalities) > 0 {
+		entry.Output = m.OutputModalities
+	}
 	if m.Reasoning != nil {
 		entry.Efforts = parseSupportedEfforts(m.Reasoning.SupportedEfforts)
+	} else if len(m.SupportedReasoningLevels) > 0 {
+		efforts := make([]string, 0, len(m.SupportedReasoningLevels))
+		for _, level := range m.SupportedReasoningLevels {
+			efforts = append(efforts, level.Effort)
+		}
+		entry.Efforts = normalizeEfforts(efforts)
 	}
 	return entry, true
 }
@@ -177,14 +203,22 @@ func cpaModalities(values []string) []string {
 	return out
 }
 
-func modelsURL(baseURL string) string {
+func modelsURL(baseURL string, codexManifest bool) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {
 		return ""
 	}
-	lower := strings.ToLower(base)
-	if strings.HasSuffix(lower, "/models") {
-		return base
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return ""
 	}
-	return base + "/models"
+	if !strings.HasSuffix(strings.ToLower(parsed.Path), "/models") {
+		parsed.Path += "/models"
+	}
+	if codexManifest {
+		query := parsed.Query()
+		query.Set("client_version", "1.0.0")
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String()
 }

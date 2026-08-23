@@ -26,11 +26,56 @@ func TestParseUpstreamModelsArray(t *testing.T) {
 }
 
 func TestModelsURL(t *testing.T) {
-	if got := modelsURL("https://openrouter.ai/api/v1"); got != "https://openrouter.ai/api/v1/models" {
+	if got := modelsURL("https://openrouter.ai/api/v1", false); got != "https://openrouter.ai/api/v1/models" {
 		t.Fatalf("%s", got)
 	}
-	if got := modelsURL("https://x/v1/models"); got != "https://x/v1/models" {
+	if got := modelsURL("https://x/v1/models", false); got != "https://x/v1/models" {
 		t.Fatalf("%s", got)
+	}
+	if got := modelsURL("https://x/v1?existing=1", true); got != "https://x/v1/models?client_version=1.0.0&existing=1" {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestParseCodexManifest(t *testing.T) {
+	body := []byte(`{"models":[
+		{"slug":"glm-5.3","context_window":1048576,"input_modalities":["text","image"],"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"max"}]},
+		{"slug":"glm-5.3[1m]","context_window":1048576,"input_modalities":["text"],"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"max"}]}
+	]}`)
+	entries, err := parseUpstreamCatalog(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].ID != "glm-5.3" || entries[1].ID != "glm-5.3[1m]" {
+		t.Fatalf("entries=%v", entries)
+	}
+	if strings.Join(entries[0].Efforts, ",") != "low,high,max" {
+		t.Fatalf("efforts=%v", entries[0].Efforts)
+	}
+	if entries[0].Context != 1048576 {
+		t.Fatalf("context=%d", entries[0].Context)
+	}
+	if got := cpaModalities(entries[0].Input); strings.Join(got, ",") != "text,image" {
+		t.Fatalf("modalities=%v", got)
+	}
+
+	models := []ModelRef{{Name: "glm-5.3"}, {Name: "glm-5.3[1m]"}}
+	matched, missed, _ := applyUpstreamMeta(models, map[string]upstreamEntry{
+		entries[0].ID: entries[0],
+		entries[1].ID: entries[1],
+	})
+	if matched != 2 || missed != 0 || strings.Join(models[1].Thinking.Levels, ",") != "low,high,max" {
+		t.Fatalf("matched=%d missed=%d models=%v", matched, missed, models)
+	}
+}
+
+func TestParseCodexManifestConfig(t *testing.T) {
+	cfg, err := parseFileConfig([]byte(`{"providers":{"ZCode":{"enabled":true,"codex_manifest":true,"upstream_meta":true}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Providers) != 1 || !cfg.Providers[0].CodexManifest || !cfg.Providers[0].UpstreamMeta {
+		t.Fatalf("providers=%v", cfg.Providers)
 	}
 }
 

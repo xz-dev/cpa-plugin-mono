@@ -26,20 +26,22 @@ type FileConfig struct {
 }
 
 type ProviderConfig struct {
-	Enabled      bool     `json:"enabled"`
-	Mode         string   `json:"mode"`
-	Patterns     []string `json:"patterns"`
-	Modelparams  bool     `json:"modelparams,omitempty"`
-	UpstreamMeta bool     `json:"upstream_meta,omitempty"`
+	Enabled       bool     `json:"enabled"`
+	Mode          string   `json:"mode"`
+	Patterns      []string `json:"patterns"`
+	Modelparams   bool     `json:"modelparams,omitempty"`
+	UpstreamMeta  bool     `json:"upstream_meta,omitempty"`
+	CodexManifest bool     `json:"codex_manifest,omitempty"`
 }
 
 type compiledProvider struct {
-	Name         string
-	Enabled      bool
-	Mode         string
-	Patterns     []*regexp.Regexp
-	Modelparams  bool
-	UpstreamMeta bool
+	Name          string
+	Enabled       bool
+	Mode          string
+	Patterns      []*regexp.Regexp
+	Modelparams   bool
+	UpstreamMeta  bool
+	CodexManifest bool
 }
 
 type runtimeConfig struct {
@@ -118,11 +120,12 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 			return runtimeConfig{}, fmt.Errorf("provider %s: mode must be include or exclude", name)
 		}
 		compiled := compiledProvider{
-			Name:         name,
-			Enabled:      spec.Enabled,
-			Mode:         mode,
-			Modelparams:  spec.Modelparams,
-			UpstreamMeta: spec.UpstreamMeta,
+			Name:          name,
+			Enabled:       spec.Enabled,
+			Mode:          mode,
+			Modelparams:   spec.Modelparams,
+			UpstreamMeta:  spec.UpstreamMeta,
+			CodexManifest: spec.CodexManifest,
 		}
 		for i, pat := range spec.Patterns {
 			pat = strings.TrimSpace(pat)

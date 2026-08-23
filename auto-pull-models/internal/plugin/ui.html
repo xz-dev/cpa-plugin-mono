@@ -191,7 +191,8 @@
           mode: card.querySelector(".mode").value,
           patterns,
           modelparams: card.querySelector(".mp").checked,
-          upstream_meta: card.querySelector(".um").checked
+          upstream_meta: card.querySelector(".um").checked,
+          codex_manifest: card.querySelector(".cm").checked
         };
       });
       return {
@@ -221,8 +222,10 @@
           <div class="grid">
             <div>启用</div><div><label class="inline"><input class="en" type="checkbox" ${p.enabled?"checked":""}/> 同步这个渠道</label></div>
             <div>推理强度</div><div>
-              <label class="inline"><input class="um" type="checkbox" ${p.upstream_meta?"checked":""}/> 用上游 /models 填写（OpenRouter 自带 reasoning / 模态）</label>
-              <div class="muted">复用这次拉取的上游目录，不再额外请求。适合 OpenRouter。</div>
+              <label class="inline"><input class="cm" type="checkbox" ${p.codex_manifest?"checked":""}/> 请求 Codex manifest（client_version=1.0.0）</label>
+              <div class="muted">仅用于支持 Codex 模型目录的上游，例如 ZCode；其它渠道保持关闭。</div>
+              <label class="inline"><input class="um" type="checkbox" ${p.upstream_meta?"checked":""}/> 用上游 /models 填写 reasoning / 模态</label>
+              <div class="muted">复用这次拉取的上游目录，不再额外请求；支持 OpenRouter 和 Codex manifest。</div>
               <label class="inline"><input class="mp" type="checkbox" ${p.modelparams?"checked":""}/> 用 modelparams.dev 填写 thinking.levels</label>
               <div class="muted">本次刷新会拉一次 Full catalog，所有勾选的渠道共用。上游已命中的档位不会被覆盖。</div>
             </div>
