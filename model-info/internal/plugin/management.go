@@ -15,12 +15,12 @@ var uiHTML []byte
 func (s *Service) ManagementRoutes() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/catalog", Description: "Fetch the current Codex-client model catalog with limits and reasoning levels"},
+			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/catalog", Description: "Fetch the current Codex-client model catalog with context, input/output limits, and reasoning levels"},
 			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/last", Description: "Last fetched catalog (cached)"},
-			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/effective", Description: "Effective limits after downstream fallback (context-window bound when max_tokens missing)"},
+			{Method: http.MethodGet, Path: "/v0/management/plugins/model-info/effective", Description: "Effective limits after context-window fallback when input/output maxima are missing"},
 		},
 		Resources: []pluginapi.ResourceRoute{
-			{Path: "/index.html", Menu: "Model Info", Description: "查看所有模型的上下文窗口、输出上限、推理等级、模态"},
+			{Path: "/index.html", Menu: "Model Info", Description: "查看所有模型的上下文窗口、最大输入/输出、推理等级、模态"},
 		},
 	}
 }

@@ -21,6 +21,7 @@ type ModelRow struct {
 	DisplayName string   `json:"display_name,omitempty"`
 	Provider    string   `json:"provider,omitempty"`
 	Context     int      `json:"context_window,omitempty"`
+	MaxInput    int      `json:"max_input_tokens,omitempty"`
 	MaxTokens   int      `json:"max_tokens,omitempty"`
 	Levels      []string `json:"reasoning_levels,omitempty"`
 	Input       []string `json:"input_modalities,omitempty"`
@@ -140,13 +141,17 @@ func (s *Service) FetchAndCache() Catalog {
 func parseCatalog(raw []byte) ([]ModelRow, error) {
 	var payload struct {
 		Models []struct {
-			ID     string `json:"id"`
-			Slug   string `json:"slug"`
-			Name   string `json:"display_name"`
-			Ctx    int    `json:"context_window"`
-			Max    int    `json:"max_tokens"`
-			Vis    string `json:"visibility"`
-			Levels []struct {
+			ID            string `json:"id"`
+			Slug          string `json:"slug"`
+			Name          string `json:"display_name"`
+			Ctx           int    `json:"context_window"`
+			MaxCtx        int    `json:"max_context_window"`
+			MaxInput      int    `json:"max_input_tokens"`
+			Max           int    `json:"max_tokens"`
+			MaxOutput     int    `json:"max_output_tokens"`
+			MaxCompletion int    `json:"max_completion_tokens"`
+			Vis           string `json:"visibility"`
+			Levels        []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
 			In  []string `json:"input_modalities"`
@@ -168,12 +173,24 @@ func parseCatalog(raw []byte) ([]ModelRow, error) {
 		if id == "" {
 			continue
 		}
+		maxInput := m.MaxInput
+		if maxInput <= 0 {
+			maxInput = m.MaxCtx
+		}
+		maxOutput := m.Max
+		if maxOutput <= 0 {
+			maxOutput = m.MaxOutput
+		}
+		if maxOutput <= 0 {
+			maxOutput = m.MaxCompletion
+		}
 		row := ModelRow{
 			ID:          id,
 			Slug:        m.Slug,
 			DisplayName: m.Name,
 			Context:     m.Ctx,
-			MaxTokens:   m.Max,
+			MaxInput:    maxInput,
+			MaxTokens:   maxOutput,
 			Visibility:  m.Vis,
 			Input:       m.In,
 			Output:      m.Out,
@@ -246,9 +263,8 @@ func readConfigJSON(pluginYAML []byte) []byte {
 	return raw
 }
 
-// Effective applies the downstream client fallback: when the gateway omits
-// max_tokens, the model's own context window becomes the output bound
-// (mirrors the Pi openai-api-extension mapModel contract).
+// Effective uses the context window when input or output maxima are absent.
+// The output fallback mirrors the Pi openai-api-extension mapModel contract.
 func (s *Service) Effective() Catalog {
 	c := s.Last()
 	if c.Error != "" {
@@ -256,6 +272,9 @@ func (s *Service) Effective() Catalog {
 	}
 	out := make([]ModelRow, 0, len(c.Models))
 	for _, m := range c.Models {
+		if m.MaxInput <= 0 {
+			m.MaxInput = m.Context
+		}
 		if m.MaxTokens > 0 {
 			m.MaxSource = "upstream"
 		} else {

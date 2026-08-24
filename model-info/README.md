@@ -1,7 +1,7 @@
 # model-info
 
 CPA 插件:在 Management Center 里查看所有模型的元数据表——上下文窗口、
-输出上限(max_tokens)、推理等级、输入/输出模态。
+最大输入、最大输出、推理等级、输入/输出模态。
 
 数据来自本机 CPA 的 Codex client 目录
 (`GET /v1/models?client_version=1.0.0`),经管理 `api-call` 代理获取,
@@ -11,8 +11,10 @@ CPA 插件:在 Management Center 里查看所有模型的元数据表——上�
 
 安装 `.so` 后打开 Management Center 的 **Model Info** 菜单,或直接访问
 `http://<host>:8317/v0/resource/plugins/model-info/index.html`。
-支持搜索、按 provider 过滤、点列头排序;上下文/输出上限缺失的单元格
-会标红,方便发现 auto-pull-models 还没补齐的模型。
+支持搜索、按 provider 过滤、点列头排序;上下文/最大输入/最大输出缺失的单元格
+会标红。最大输入优先读取 `max_input_tokens`,否则使用 Codex catalog 的
+`max_context_window`;最大输出依次读取 `max_tokens`、`max_output_tokens`、
+`max_completion_tokens`。
 
 ## 配置
 
@@ -34,5 +36,6 @@ JSON 字段(全部可选):
 
 - `GET /v0/management/plugins/model-info/catalog` — 立即拉取并返回目录
 - `GET /v0/management/plugins/model-info/last` — 上次结果(缓存)
+- `GET /v0/management/plugins/model-info/effective` — 缺失上限按上下文回退后的结果
 
 MIT

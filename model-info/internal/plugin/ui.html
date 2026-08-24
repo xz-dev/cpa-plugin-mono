@@ -35,7 +35,7 @@
 <body>
 <h1>Model Info</h1>
 <div class="tabs">
-  <button class="tab active" data-view="effective">实际输出</button>
+  <button class="tab active" data-view="effective">实际上限</button>
   <button class="tab" data-view="raw">Raw</button>
 </div>
 <div class="bar">
@@ -47,7 +47,7 @@
 <div id="status">加载中…</div>
 <table><thead><tr>
   <th data-k="id">ID</th><th data-k="display_name">名称</th><th data-k="provider">Provider</th>
-  <th data-k="context_window" data-n>上下文</th><th data-k="max_tokens" data-n>输出上限</th>
+  <th data-k="context_window" data-n>上下文</th><th data-k="max_input_tokens" data-n>最大输入</th><th data-k="max_tokens" data-n>最大输出</th>
   <th>推理等级</th><th>输入</th><th>输出</th>
 </tr></thead><tbody id="rows"></tbody></table>
 <script>
@@ -118,15 +118,17 @@ function render() {
     <td>${m.display_name || m.id}</td>
     <td class="mono">${m.provider || ''}</td>
     <td class="mono">${fmtK(m.context_window) || '<span class="miss">缺</span>'}</td>
+    <td class="mono">${fmtK(m.max_input_tokens) || '<span class="miss">缺</span>'}</td>
     <td class="mono">${fmtK(m.max_tokens) || '<span class="miss">缺</span>'}${m.max_source === 'fallback-context' ? '<span class="src">回退</span>' : m.max_source === 'upstream' ? '<span class="src" style="background:#e8eaf6">原生</span>' : ''}</td>
     <td>${(m.reasoning_levels||[]).map(l => `<span class="lvl">${l}</span>`).join('') || '<span class="miss">无</span>'}</td>
     <td>${(m.input_modalities||[]).join(',')}</td>
     <td>${(m.output_modalities||[]).join(',')}</td>
   </tr>`).join('');
-  const missing = rawModels.filter(m => !m.max_tokens).length;
+  const missingInput = rawModels.filter(m => !m.max_input_tokens).length;
+  const missingOutput = rawModels.filter(m => !m.max_tokens).length;
   status.textContent = view === 'raw'
-    ? `${list.length} / ${rawModels.length} 个模型（raw，${missing} 个缺 max_tokens）`
-    : `${list.length} / ${effModels.length} 个模型（实际输出；缺 max 的按上下文回退）`;
+    ? `${list.length} / ${rawModels.length} 个模型（raw，缺最大输入 ${missingInput}，缺最大输出 ${missingOutput}）`
+    : `${list.length} / ${effModels.length} 个模型（缺最大输入/输出时按上下文回退）`;
 }
 
 async function load() {
