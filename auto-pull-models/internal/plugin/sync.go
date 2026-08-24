@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -232,54 +233,26 @@ func (s *Service) Preview(key, onlyProvider string, override *runtimeConfig) Syn
 }
 
 func modelsEqual(a, b []ModelRef) bool {
-	if len(a) != len(b) {
+	aSet := modelSet(a)
+	bSet := modelSet(b)
+	if len(aSet) != len(bSet) {
 		return false
 	}
-	for i := range a {
-		if a[i].Name != b[i].Name || a[i].Alias != b[i].Alias || a[i].DisplayName != b[i].DisplayName {
-			return false
-		}
-		if a[i].MaxContextLength != b[i].MaxContextLength || a[i].MaxInputTokens != b[i].MaxInputTokens || a[i].MaxOutputTokens != b[i].MaxOutputTokens {
-			return false
-		}
-		if !thinkingEqual(a[i].Thinking, b[i].Thinking) {
-			return false
-		}
-		if !stringSliceEqual(a[i].InputModalities, b[i].InputModalities) || !stringSliceEqual(a[i].OutputModalities, b[i].OutputModalities) {
+	for model := range aSet {
+		if _, ok := bSet[model]; !ok {
 			return false
 		}
 	}
 	return true
 }
 
-func thinkingEqual(a, b *ThinkingConfig) bool {
-	if a == nil && b == nil {
-		return true
+func modelSet(models []ModelRef) map[string]struct{} {
+	set := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		raw, _ := json.Marshal(model)
+		set[string(raw)] = struct{}{}
 	}
-	if a == nil || b == nil {
-		return false
-	}
-	if len(a.Levels) != len(b.Levels) {
-		return false
-	}
-	for i := range a.Levels {
-		if a.Levels[i] != b.Levels[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return set
 }
 
 func applyUpstreamMeta(models []ModelRef, byID map[string]upstreamEntry) (matched, missed int, samples []string) {

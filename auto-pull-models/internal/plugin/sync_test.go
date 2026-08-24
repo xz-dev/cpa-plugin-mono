@@ -149,15 +149,28 @@ func TestParseConfigRejectsOverrideModelWhitespace(t *testing.T) {
 	}
 }
 
-func TestModelsEqualIncludesTokenLimits(t *testing.T) {
+func TestModelsEqualIgnoresOrderAndDuplicates(t *testing.T) {
+	a := ModelRef{Name: "a", Alias: "a", MaxContextLength: 100}
+	b := ModelRef{Name: "b", Alias: "b", Thinking: &ThinkingConfig{Levels: []string{"low", "high"}}}
+	if !modelsEqual([]ModelRef{a, b}, []ModelRef{b, a, a}) {
+		t.Fatal("model equality must use set semantics")
+	}
+}
+
+func TestModelsEqualIncludesMetadata(t *testing.T) {
 	base := []ModelRef{{Name: "model", Alias: "model"}}
 	for name, changed := range map[string]ModelRef{
-		"context": {Name: "model", Alias: "model", MaxContextLength: 100},
-		"input":   {Name: "model", Alias: "model", MaxInputTokens: 90},
-		"output":  {Name: "model", Alias: "model", MaxOutputTokens: 10},
+		"alias":             {Name: "model", Alias: "alias"},
+		"display":           {Name: "model", Alias: "model", DisplayName: "Model"},
+		"context":           {Name: "model", Alias: "model", MaxContextLength: 100},
+		"input limit":       {Name: "model", Alias: "model", MaxInputTokens: 90},
+		"output limit":      {Name: "model", Alias: "model", MaxOutputTokens: 10},
+		"thinking":          {Name: "model", Alias: "model", Thinking: &ThinkingConfig{Levels: []string{"high"}}},
+		"input modalities":  {Name: "model", Alias: "model", InputModalities: []string{"image"}},
+		"output modalities": {Name: "model", Alias: "model", OutputModalities: []string{"image"}},
 	} {
 		if modelsEqual(base, []ModelRef{changed}) {
-			t.Fatalf("%s token limit was ignored", name)
+			t.Fatalf("%s metadata was ignored", name)
 		}
 	}
 }
