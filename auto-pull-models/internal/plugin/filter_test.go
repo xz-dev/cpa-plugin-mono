@@ -78,3 +78,20 @@ func TestMergeModelsKeepsThinking(t *testing.T) {
 		t.Fatalf("thinking=%v", got[0].Thinking)
 	}
 }
+
+func TestApplyModelOverridesWinsLast(t *testing.T) {
+	models := []ModelRef{{
+		Name:             "gpt-5.6-sol",
+		MaxContextLength: 128000,
+		Thinking:         &ThinkingConfig{Levels: []string{"low", "high"}},
+	}}
+	applyModelOverrides(models, map[string]ModelOverride{
+		"gpt-5.6-sol": {MaxContextLength: 1050000, MaxInputTokens: 1000000, MaxOutputTokens: 50000, ThinkingLevels: []string{"none", "medium", "max"}},
+	})
+	if models[0].MaxContextLength != 1050000 || models[0].MaxInputTokens != 1000000 || models[0].MaxOutputTokens != 50000 {
+		t.Fatalf("token limits=%+v", models[0])
+	}
+	if got := strings.Join(models[0].Thinking.Levels, ","); got != "none,medium,max" {
+		t.Fatalf("thinking=%s", got)
+	}
+}

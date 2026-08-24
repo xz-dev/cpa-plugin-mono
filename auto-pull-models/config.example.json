@@ -17,7 +17,15 @@
       "patterns": [],
       "codex_manifest": true,
       "upstream_meta": true,
-      "modelsdev": true
+      "modelsdev": true,
+      "overrides": {
+        "glm-5.3": {
+          "max_context_length": 262144,
+          "max_input_tokens": 240000,
+          "max_output_tokens": 22144,
+          "thinking_levels": ["low", "high", "max"]
+        }
+      }
     }
   }
 }

@@ -49,7 +49,7 @@ func TestWriteModelsFileReplacesOnlyTargetProvider(t *testing.T) {
 	path := writeTemp(t, sampleConfig)
 	err := writeModelsFile(path, map[string][]ModelRef{
 		"ZCode": {
-			{Name: "glm-5.3", Alias: "glm-5.3", MaxContextLength: 200000, Thinking: &ThinkingConfig{Levels: []string{"low", "high", "max"}}},
+			{Name: "glm-5.3", Alias: "glm-5.3", MaxContextLength: 200000, MaxInputTokens: 180000, MaxOutputTokens: 20000, Thinking: &ThinkingConfig{Levels: []string{"low", "high", "max"}}},
 			{Name: "glm-5.3[1m]", Alias: "glm-5.3[1m]", MaxContextLength: 1048576},
 		},
 	})
@@ -103,7 +103,7 @@ func TestWriteModelsFileReplacesOnlyTargetProvider(t *testing.T) {
 	if len(zcode.Models) != 2 {
 		t.Fatalf("ZCode models = %d, want 2: %+v", len(zcode.Models), zcode.Models)
 	}
-	if zcode.Models[0].Name != "glm-5.3" || zcode.Models[0].MaxContextLength != 200000 {
+	if zcode.Models[0].Name != "glm-5.3" || zcode.Models[0].MaxContextLength != 200000 || zcode.Models[0].MaxInputTokens != 180000 || zcode.Models[0].MaxOutputTokens != 20000 {
 		t.Fatalf("model[0] wrong: %+v", zcode.Models[0])
 	}
 	if zcode.Models[0].Thinking == nil || len(zcode.Models[0].Thinking.Levels) != 3 {

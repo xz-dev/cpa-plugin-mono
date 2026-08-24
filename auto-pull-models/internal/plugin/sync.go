@@ -185,7 +185,8 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 				}
 			}
 		}
-		applyContextLimits(merged, byID, devCatalog, devErr, spec.Modelsdev)
+		applyModelLimits(merged, byID, devCatalog, devErr, spec.Modelsdev)
+		applyModelOverrides(merged, spec.Overrides)
 		res.Written = len(merged)
 		if modelsEqual(host.Models, merged) {
 			res.Unchanged = true
@@ -238,7 +239,7 @@ func modelsEqual(a, b []ModelRef) bool {
 		if a[i].Name != b[i].Name || a[i].Alias != b[i].Alias || a[i].DisplayName != b[i].DisplayName {
 			return false
 		}
-		if a[i].MaxContextLength != b[i].MaxContextLength {
+		if a[i].MaxContextLength != b[i].MaxContextLength || a[i].MaxInputTokens != b[i].MaxInputTokens || a[i].MaxOutputTokens != b[i].MaxOutputTokens {
 			return false
 		}
 		if !thinkingEqual(a[i].Thinking, b[i].Thinking) {
@@ -351,25 +352,32 @@ func sample(ids []string, n int) []string {
 	return append([]string(nil), ids[:n]...)
 }
 
-// applyContextLimits writes max-context-length into each config model:
-// upstream-declared context wins, models.dev fills only the gaps. CPA maps
-// this field to the Codex catalog context_window.
-func applyContextLimits(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error, enabled bool) {
+// applyModelLimits fills context and output limits from the upstream catalog,
+// then models.dev. Existing values win; explicit overrides run after this step.
+func applyModelLimits(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error, enabled bool) {
 	if !enabled {
 		return
 	}
 	for i := range models {
-		if models[i].MaxContextLength > 0 {
+		upstream := byID[models[i].Name]
+		if models[i].MaxContextLength == 0 && upstream.Context > 0 {
+			models[i].MaxContextLength = upstream.Context
+		}
+		if models[i].MaxOutputTokens == 0 && upstream.MaxTokens > 0 {
+			models[i].MaxOutputTokens = upstream.MaxTokens
+		}
+		if devErr != nil {
 			continue
 		}
-		if e, ok := byID[models[i].Name]; ok && e.Context > 0 {
-			models[i].MaxContextLength = e.Context
+		entry, ok := dev.lookup(models[i].Name)
+		if !ok {
 			continue
 		}
-		if devErr == nil {
-			if entry, ok := dev.lookup(models[i].Name); ok && entry.Context > 0 {
-				models[i].MaxContextLength = entry.Context
-			}
+		if models[i].MaxContextLength == 0 && entry.Context > 0 {
+			models[i].MaxContextLength = entry.Context
+		}
+		if models[i].MaxOutputTokens == 0 && entry.MaxOut > 0 {
+			models[i].MaxOutputTokens = entry.MaxOut
 		}
 	}
 }

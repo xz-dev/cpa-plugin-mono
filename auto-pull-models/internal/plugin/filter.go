@@ -9,6 +9,8 @@ type ModelRef struct {
 	Alias            string          `json:"alias,omitempty" yaml:"alias,omitempty"`
 	DisplayName      string          `json:"display-name,omitempty" yaml:"display-name,omitempty"`
 	MaxContextLength int             `json:"max-context-length,omitempty" yaml:"max-context-length,omitempty"`
+	MaxInputTokens   int             `json:"max-input-tokens,omitempty" yaml:"max-input-tokens,omitempty"`
+	MaxOutputTokens  int             `json:"max-output-tokens,omitempty" yaml:"max-output-tokens,omitempty"`
 	Thinking         *ThinkingConfig `json:"thinking,omitempty" yaml:"thinking,omitempty"`
 	InputModalities  []string        `json:"input-modalities,omitempty" yaml:"input-modalities,omitempty"`
 	OutputModalities []string        `json:"output-modalities,omitempty" yaml:"output-modalities,omitempty"`
@@ -72,6 +74,8 @@ func mergeModels(existing []ModelRef, ids []string, keepAliases bool) []ModelRef
 			}
 			ref.DisplayName = prev.DisplayName
 			ref.MaxContextLength = prev.MaxContextLength
+			ref.MaxInputTokens = prev.MaxInputTokens
+			ref.MaxOutputTokens = prev.MaxOutputTokens
 			ref.Thinking = prev.Thinking
 			ref.InputModalities = prev.InputModalities
 			ref.OutputModalities = prev.OutputModalities
@@ -79,4 +83,25 @@ func mergeModels(existing []ModelRef, ids []string, keepAliases bool) []ModelRef
 		out = append(out, ref)
 	}
 	return out
+}
+
+func applyModelOverrides(models []ModelRef, overrides map[string]ModelOverride) {
+	for i := range models {
+		override, ok := overrides[models[i].Name]
+		if !ok {
+			continue
+		}
+		if override.MaxContextLength > 0 {
+			models[i].MaxContextLength = override.MaxContextLength
+		}
+		if override.MaxInputTokens > 0 {
+			models[i].MaxInputTokens = override.MaxInputTokens
+		}
+		if override.MaxOutputTokens > 0 {
+			models[i].MaxOutputTokens = override.MaxOutputTokens
+		}
+		if len(override.ThinkingLevels) > 0 {
+			models[i].Thinking = &ThinkingConfig{Levels: append([]string(nil), override.ThinkingLevels...)}
+		}
+	}
 }

@@ -18,7 +18,7 @@
     .card { border: 1px solid var(--bd); border-radius: 12px; padding: 14px; margin: 10px 0; }
     .card h3 { margin: 0 0 8px; font-size: 1rem; }
     .grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: start; }
-    textarea.patterns { width: 100%; min-height: 72px; font-family: ui-monospace, monospace; font-size: 13px; }
+    textarea.patterns, textarea.overrides { width: 100%; min-height: 72px; font-family: ui-monospace, monospace; font-size: 13px; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     @media (max-width: 800px) { .cols, .grid { grid-template-columns: 1fr; } }
     .list { border: 1px solid var(--bd); border-radius: 8px; padding: 8px; max-height: 240px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
@@ -186,6 +186,11 @@
       document.querySelectorAll("[data-card]").forEach(card => {
         const name = card.dataset.card;
         const patterns = card.querySelector(".patterns").value.split("\n").map(s => s.trim()).filter(Boolean);
+        const rawOverrides = card.querySelector(".overrides").value.trim();
+        const overrides = rawOverrides ? JSON.parse(rawOverrides) : {};
+        if (!overrides || Array.isArray(overrides) || typeof overrides !== "object") {
+          throw new Error(`${name} 的模型覆盖必须是 JSON object`);
+        }
         providers[name] = {
           enabled: card.querySelector(".en").checked,
           mode: card.querySelector(".mode").value,
@@ -193,7 +198,8 @@
           modelparams: card.querySelector(".mp").checked,
           upstream_meta: card.querySelector(".um").checked,
           codex_manifest: card.querySelector(".cm").checked,
-          modelsdev: card.querySelector(".mdv").checked
+          modelsdev: card.querySelector(".mdv").checked,
+          overrides
         };
       });
       return {
@@ -230,9 +236,14 @@
               <label class="inline"><input class="mp" type="checkbox" ${p.modelparams?"checked":""}/> 用 modelparams.dev 填写 thinking.levels</label>
               <div class="muted">本次刷新会拉一次 Full catalog，所有勾选的渠道共用。上游已命中的档位不会被覆盖。</div>
             </div>
-            <div>上下文</div><div>
-              <label class="inline"><input class="mdv" type="checkbox" ${p.modelsdev?"checked":""}/> 填写 max-context-length</label>
-              <div class="muted">上游已声明的 context 优先；空缺用 models.dev 补。勾选的渠道共用一次 models.dev catalog。</div>
+            <div>模型上限</div><div>
+              <label class="inline"><input class="mdv" type="checkbox" ${p.modelsdev?"checked":""}/> 填写 max-context-length / max-output-tokens</label>
+              <div class="muted">上游已声明的 context / output 优先；空缺用 models.dev 补。勾选的渠道共用一次 models.dev catalog。</div>
+            </div>
+            <div>模型覆盖</div>
+            <div>
+              <textarea class="overrides" placeholder='{"模型 id":{"max_context_length":262144,"max_input_tokens":240000,"max_output_tokens":22144,"thinking_levels":["low","high"]}}'>${escapeHtml(JSON.stringify(p.overrides||{}, null, 2))}</textarea>
+              <div class="muted">JSON object，key 精确匹配上游模型 id。同步时最后生效，不会被上游目录覆盖。</div>
             </div>
             <div>规则</div>
             <div>
@@ -347,7 +358,7 @@
     document.getElementById("addBtn").onclick = () => {
       const name = document.getElementById("addSelect").value;
       if (!name) return;
-      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false, modelsdev:false};
+      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false, modelsdev:false, overrides:{}};
       renderCards();
       fillAdd();
     };

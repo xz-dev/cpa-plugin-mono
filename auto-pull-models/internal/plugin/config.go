@@ -37,13 +37,21 @@ type FileConfig struct {
 }
 
 type ProviderConfig struct {
-	Enabled       bool     `json:"enabled"`
-	Mode          string   `json:"mode"`
-	Patterns      []string `json:"patterns"`
-	Modelparams   bool     `json:"modelparams,omitempty"`
-	UpstreamMeta  bool     `json:"upstream_meta,omitempty"`
-	CodexManifest bool     `json:"codex_manifest,omitempty"`
-	Modelsdev     bool     `json:"modelsdev,omitempty"`
+	Enabled       bool                     `json:"enabled"`
+	Mode          string                   `json:"mode"`
+	Patterns      []string                 `json:"patterns"`
+	Modelparams   bool                     `json:"modelparams,omitempty"`
+	UpstreamMeta  bool                     `json:"upstream_meta,omitempty"`
+	CodexManifest bool                     `json:"codex_manifest,omitempty"`
+	Modelsdev     bool                     `json:"modelsdev,omitempty"`
+	Overrides     map[string]ModelOverride `json:"overrides,omitempty"`
+}
+
+type ModelOverride struct {
+	MaxContextLength int      `json:"max_context_length,omitempty"`
+	MaxInputTokens   int      `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
+	ThinkingLevels   []string `json:"thinking_levels,omitempty"`
 }
 
 type compiledProvider struct {
@@ -55,6 +63,7 @@ type compiledProvider struct {
 	UpstreamMeta  bool
 	CodexManifest bool
 	Modelsdev     bool
+	Overrides     map[string]ModelOverride
 }
 
 type runtimeConfig struct {
@@ -155,6 +164,32 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 			UpstreamMeta:  spec.UpstreamMeta,
 			CodexManifest: spec.CodexManifest,
 			Modelsdev:     spec.Modelsdev,
+			Overrides:     make(map[string]ModelOverride, len(spec.Overrides)),
+		}
+		for model, override := range spec.Overrides {
+			trimmedModel := strings.TrimSpace(model)
+			if trimmedModel == "" {
+				return runtimeConfig{}, fmt.Errorf("provider %s: override model name is empty", name)
+			}
+			if trimmedModel != model {
+				return runtimeConfig{}, fmt.Errorf("provider %s model %q: override model name must not have surrounding whitespace", name, model)
+			}
+			if override.MaxContextLength < 0 || override.MaxInputTokens < 0 || override.MaxOutputTokens < 0 {
+				return runtimeConfig{}, fmt.Errorf("provider %s model %s: token limits must be >= 0", name, model)
+			}
+			if len(override.ThinkingLevels) > 0 {
+				for _, level := range override.ThinkingLevels {
+					normalized := strings.ToLower(strings.TrimSpace(level))
+					if _, ok := cpaThinkingLevels[normalized]; !ok {
+						return runtimeConfig{}, fmt.Errorf("provider %s model %s: unsupported thinking level %q", name, model, level)
+					}
+				}
+				override.ThinkingLevels = normalizeEfforts(override.ThinkingLevels)
+				if len(override.ThinkingLevels) == 0 {
+					return runtimeConfig{}, fmt.Errorf("provider %s model %s: thinking_levels must include a reasoning depth", name, model)
+				}
+			}
+			compiled.Overrides[model] = override
 		}
 		for i, pat := range spec.Patterns {
 			pat = strings.TrimSpace(pat)
