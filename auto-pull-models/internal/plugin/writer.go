@@ -17,6 +17,27 @@ const (
 	maxBackups   = 10
 )
 
+func readModelsFile(configFile string) (map[string][]ModelRef, error) {
+	raw, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var doc struct {
+		Providers []struct {
+			Name   string     `yaml:"name"`
+			Models []ModelRef `yaml:"models"`
+		} `yaml:"openai-compatibility"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	models := make(map[string][]ModelRef, len(doc.Providers))
+	for _, provider := range doc.Providers {
+		models[provider.Name] = provider.Models
+	}
+	return models, nil
+}
+
 // writeModelsFile replaces the models list of the named openai-compatibility
 // providers inside configFile. New YAML is fully prepared first, the previous
 // file is copied into a FIFO of up to 10 backups, then the live file is

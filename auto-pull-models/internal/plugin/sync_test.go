@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 type codexSyncTransport struct {
 	t          *testing.T
+	compatJSON string
 	manifest   string
 	apiCallURL string
 	patched    []ModelRef
@@ -18,6 +20,9 @@ type codexSyncTransport struct {
 func (t *codexSyncTransport) Do(method, url string, _ http.Header, body []byte) (int, []byte, error) {
 	switch {
 	case method == http.MethodGet && strings.HasSuffix(url, "/v0/management/openai-compatibility"):
+		if t.compatJSON != "" {
+			return http.StatusOK, []byte(t.compatJSON), nil
+		}
 		return http.StatusOK, []byte(`{"openai-compatibility":[{"name":"ZCode","base-url":"http://zcode-proxy:8080/v1","api-key-entries":[{"auth-index":"zcode"}],"models":[]}]}`), nil
 	case method == http.MethodPost && strings.HasSuffix(url, "/v0/management/api-call"):
 		var req apiCallRequest
@@ -120,6 +125,90 @@ func TestSyncAppliesOverridesAfterUpstreamMetadata(t *testing.T) {
 	}
 	if got := strings.Join(model.Thinking.Levels, ","); got != "none,medium,max" {
 		t.Fatalf("thinking=%s", got)
+	}
+}
+
+func TestSyncFileModeUsesConfigModelsForEquality(t *testing.T) {
+	path := writeTemp(t, `openai-compatibility:
+  - name: ZCode
+    models:
+      - name: a
+        alias: a
+        max-context-length: 100
+        max-output-tokens: 10
+      - name: b
+        alias: b
+        max-context-length: 200
+        max-output-tokens: 20
+`)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &codexSyncTransport{
+		t: t,
+		compatJSON: `{"openai-compatibility":[{"name":"ZCode","base-url":"http://zcode-proxy:8080/v1","models":[
+			{"name":"b","alias":"b","max-context-length":200},
+			{"name":"a","alias":"a","max-context-length":100}
+		]}]}`,
+		manifest: `{"data":[{"id":"b"},{"id":"a"},{"id":"a"}]}`,
+	}
+	service := New(transport)
+	service.cfg = runtimeConfig{
+		ManagementBaseURL:   "http://cpa:8317",
+		KeepExistingAliases: true,
+		WriteMode:           WriteModeFile,
+		ConfigPath:          path,
+		Providers: []compiledProvider{{
+			Name:    "ZCode",
+			Enabled: true,
+			Mode:    ModeExclude,
+			Overrides: map[string]ModelOverride{
+				"a": {MaxOutputTokens: 10},
+				"b": {MaxOutputTokens: 20},
+			},
+		}},
+	}
+
+	report := service.Sync("management-key", "ZCode")
+	if !report.OK || len(report.Providers) != 1 || !report.Providers[0].Unchanged {
+		t.Fatalf("report=%+v", report)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("unchanged model set rewrote config:\n%s", after)
+	}
+	backups, err := filepath.Glob(path + backupSuffix + "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("unchanged sync created backups: %v", backups)
+	}
+
+	service.cfg.Providers[0].Overrides["a"] = ModelOverride{MaxOutputTokens: 30}
+	report = service.Sync("management-key", "ZCode")
+	if !report.OK || report.Providers[0].Unchanged {
+		t.Fatalf("metadata change report=%+v", report)
+	}
+	models, err := readModelsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, model := range models["ZCode"] {
+		if model.Name == "a" {
+			found = true
+			if model.MaxOutputTokens != 30 {
+				t.Fatalf("max output tokens=%d, want 30", model.MaxOutputTokens)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("model a missing after metadata update")
 	}
 }
 

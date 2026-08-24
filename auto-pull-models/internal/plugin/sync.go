@@ -108,6 +108,15 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 	}
 	pendingWrites := map[string][]ModelRef{}
 	fileMode := cfg.WriteMode == WriteModeFile
+	fileModels := map[string][]ModelRef{}
+	if fileMode {
+		fileModels, err = readModelsFile(cfg.ConfigPath)
+		if err != nil {
+			report.OK = false
+			report.Error = "file read: " + err.Error()
+			return report
+		}
+	}
 
 	for _, spec := range cfg.Providers {
 		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
@@ -127,7 +136,18 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 			continue
 		}
 		host := list[idx]
-		res.Current = len(host.Models)
+		currentModels := host.Models
+		if fileMode {
+			var found bool
+			currentModels, found = fileModels[spec.Name]
+			if !found {
+				res.Error = "config.yaml 里没有这个 openai-compatibility provider"
+				report.OK = false
+				report.Providers = append(report.Providers, res)
+				continue
+			}
+		}
+		res.Current = len(currentModels)
 		if host.Disabled {
 			res.Skipped = true
 			res.Error = "provider 已在 CPA 禁用"
@@ -161,7 +181,7 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 		res.Dropped = len(dropped)
 		res.KeptSamples = sample(kept, 40)
 		res.DroppedSamples = sample(dropped, 40)
-		merged := mergeModels(host.Models, kept, cfg.KeepExistingAliases)
+		merged := mergeModels(currentModels, kept, cfg.KeepExistingAliases)
 		if spec.UpstreamMeta {
 			matched, missed, samples := applyUpstreamMeta(merged, byID)
 			res.ThinkingMatched = matched
@@ -189,7 +209,7 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 		applyModelLimits(merged, byID, devCatalog, devErr, spec.Modelsdev)
 		applyModelOverrides(merged, spec.Overrides)
 		res.Written = len(merged)
-		if modelsEqual(host.Models, merged) {
+		if modelsEqual(currentModels, merged) {
 			res.Unchanged = true
 			report.Providers = append(report.Providers, res)
 			continue
