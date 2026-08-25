@@ -8,23 +8,25 @@ import (
 )
 
 type ProviderResult struct {
-	Name             string   `json:"name"`
-	Enabled          bool     `json:"enabled"`
-	Fetched          int      `json:"fetched"`
-	Kept             int      `json:"kept"`
-	Dropped          int      `json:"dropped"`
-	Written          int      `json:"written"`
-	Current          int      `json:"current"`
-	Skipped          bool     `json:"skipped,omitempty"`
-	Unchanged        bool     `json:"unchanged,omitempty"`
-	DryRun           bool     `json:"dry_run,omitempty"`
-	KeptSamples      []string `json:"kept_samples,omitempty"`
-	DroppedSamples   []string `json:"dropped_samples,omitempty"`
-	ThinkingMatched  int      `json:"thinking_matched,omitempty"`
-	ThinkingMissed   int      `json:"thinking_missed,omitempty"`
-	ThinkingSamples  []string `json:"thinking_samples,omitempty"`
-	ModelparamsError string   `json:"modelparams_error,omitempty"`
-	Error            string   `json:"error,omitempty"`
+	Name             string                `json:"name"`
+	Enabled          bool                  `json:"enabled"`
+	Fetched          int                   `json:"fetched"`
+	Kept             int                   `json:"kept"`
+	Dropped          int                   `json:"dropped"`
+	Written          int                   `json:"written"`
+	Current          int                   `json:"current"`
+	Skipped          bool                  `json:"skipped,omitempty"`
+	Unchanged        bool                  `json:"unchanged,omitempty"`
+	DryRun           bool                  `json:"dry_run,omitempty"`
+	KeptSamples      []string              `json:"kept_samples,omitempty"`
+	DroppedSamples   []string              `json:"dropped_samples,omitempty"`
+	ThinkingMatched  int                   `json:"thinking_matched,omitempty"`
+	ThinkingMissed   int                   `json:"thinking_missed,omitempty"`
+	ThinkingSamples  []string              `json:"thinking_samples,omitempty"`
+	Metadata         []ModelMetadataResult `json:"metadata,omitempty"`
+	ModelparamsError string                `json:"modelparams_error,omitempty"`
+	CatalogErrors    []string              `json:"catalog_errors,omitempty"`
+	Error            string                `json:"error,omitempty"`
 }
 
 type SyncReport struct {
@@ -80,14 +82,16 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
 			continue
 		}
-		if spec.Enabled && spec.Modelparams {
-			needCatalog = true
+		if !spec.Enabled {
+			continue
 		}
-		if spec.Enabled && spec.Modelsdev {
-			needDev = true
-		}
-		if spec.Enabled {
-			break
+		for _, source := range spec.MetadataSources {
+			if source.Website == "modelparams.dev" {
+				needCatalog = true
+			}
+			if source.Website == "models.dev" {
+				needDev = true
+			}
 		}
 	}
 	if needDev {
@@ -182,32 +186,17 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 		res.KeptSamples = sample(kept, 40)
 		res.DroppedSamples = sample(dropped, 40)
 		merged := mergeModels(currentModels, kept, cfg.KeepExistingAliases)
-		if spec.UpstreamMeta {
-			matched, missed, samples := applyUpstreamMeta(merged, byID)
-			res.ThinkingMatched = matched
-			res.ThinkingMissed = missed
-			res.ThinkingSamples = samples
-		}
-		if spec.Modelparams {
-			if catalogErr != nil {
-				res.ModelparamsError = catalogErr.Error()
-			} else {
-				matched, missed, samples := applyModelparamsThinking(merged, catalog, spec.UpstreamMeta)
-				if !spec.UpstreamMeta {
-					res.ThinkingMatched = matched
-					res.ThinkingMissed = missed
-					res.ThinkingSamples = samples
-				} else {
-					res.ThinkingMatched += matched
-					res.ThinkingMissed = missed
-					if len(res.ThinkingSamples) < 12 {
-						res.ThinkingSamples = append(res.ThinkingSamples, samples...)
-					}
+		res.Metadata, res.ThinkingMatched, res.ThinkingMissed = enrichModels(merged, byID, spec, catalog, catalogErr, devCatalog, devErr)
+		res.ThinkingSamples = metadataSamples(res.Metadata)
+		res.CatalogErrors = sourceErrors(spec, catalogErr, devErr)
+		if catalogErr != nil {
+			for _, source := range spec.MetadataSources {
+				if source.Website == "modelparams.dev" {
+					res.ModelparamsError = catalogErr.Error()
+					break
 				}
 			}
 		}
-		applyModelLimits(merged, byID, devCatalog, devErr, spec.Modelsdev)
-		applyModelOverrides(merged, spec.Overrides)
 		res.Written = len(merged)
 		if modelsEqual(currentModels, merged) {
 			res.Unchanged = true
@@ -275,55 +264,6 @@ func modelSet(models []ModelRef) map[string]struct{} {
 	return set
 }
 
-func applyUpstreamMeta(models []ModelRef, byID map[string]upstreamEntry) (matched, missed int, samples []string) {
-	for i := range models {
-		e, ok := byID[models[i].Name]
-		if !ok {
-			missed++
-			continue
-		}
-		if mods := cpaModalities(e.Input); len(mods) > 0 {
-			models[i].InputModalities = mods
-		}
-		if mods := cpaModalities(e.Output); len(mods) > 0 {
-			models[i].OutputModalities = mods
-		}
-		if len(e.Efforts) == 0 {
-			missed++
-			continue
-		}
-		models[i].Thinking = &ThinkingConfig{Levels: e.Efforts}
-		matched++
-		if len(samples) < 12 {
-			line := models[i].Name + ": " + strings.Join(e.Efforts, ",")
-			if e.Context > 0 {
-				line += fmt.Sprintf(" ctx=%d", e.Context)
-			}
-			samples = append(samples, line)
-		}
-	}
-	return
-}
-
-func applyModelparamsThinking(models []ModelRef, cat *modelparamsCatalog, skipFilled bool) (matched, missed int, samples []string) {
-	for i := range models {
-		if skipFilled && models[i].Thinking != nil && len(models[i].Thinking.Levels) > 0 {
-			continue
-		}
-		levels, ok := cat.levelsFor(models[i].Name)
-		if !ok {
-			missed++
-			continue
-		}
-		models[i].Thinking = &ThinkingConfig{Levels: levels}
-		matched++
-		if len(samples) < 12 {
-			samples = append(samples, models[i].Name+": "+strings.Join(levels, ","))
-		}
-	}
-	return
-}
-
 func difference(all, kept []string) []string {
 	have := map[string]struct{}{}
 	for _, id := range kept {
@@ -343,34 +283,4 @@ func sample(ids []string, n int) []string {
 		return append([]string(nil), ids...)
 	}
 	return append([]string(nil), ids[:n]...)
-}
-
-// applyModelLimits fills context and output limits from the upstream catalog,
-// then models.dev. Existing values win; explicit overrides run after this step.
-func applyModelLimits(models []ModelRef, byID map[string]upstreamEntry, dev *modelsdevCatalog, devErr error, enabled bool) {
-	if !enabled {
-		return
-	}
-	for i := range models {
-		upstream := byID[models[i].Name]
-		if models[i].MaxContextLength == 0 && upstream.Context > 0 {
-			models[i].MaxContextLength = upstream.Context
-		}
-		if models[i].MaxOutputTokens == 0 && upstream.MaxTokens > 0 {
-			models[i].MaxOutputTokens = upstream.MaxTokens
-		}
-		if devErr != nil {
-			continue
-		}
-		entry, ok := dev.lookup(models[i].Name)
-		if !ok {
-			continue
-		}
-		if models[i].MaxContextLength == 0 && entry.Context > 0 {
-			models[i].MaxContextLength = entry.Context
-		}
-		if models[i].MaxOutputTokens == 0 && entry.MaxOut > 0 {
-			models[i].MaxOutputTokens = entry.MaxOut
-		}
-	}
 }

@@ -68,40 +68,21 @@ func mergeModels(existing []ModelRef, ids []string, keepAliases bool) []ModelRef
 		}
 		seen[id] = struct{}{}
 		ref := ModelRef{Name: id, Alias: id}
-		if prev, ok := aliasByName[id]; ok && keepAliases {
-			if prev.Alias != "" {
+		if prev, ok := aliasByName[id]; ok {
+			if keepAliases && prev.Alias != "" {
 				ref.Alias = prev.Alias
 			}
 			ref.DisplayName = prev.DisplayName
 			ref.MaxContextLength = prev.MaxContextLength
 			ref.MaxInputTokens = prev.MaxInputTokens
 			ref.MaxOutputTokens = prev.MaxOutputTokens
-			ref.Thinking = prev.Thinking
-			ref.InputModalities = prev.InputModalities
-			ref.OutputModalities = prev.OutputModalities
+			if prev.Thinking != nil {
+				ref.Thinking = &ThinkingConfig{Levels: append([]string(nil), prev.Thinking.Levels...)}
+			}
+			ref.InputModalities = append([]string(nil), prev.InputModalities...)
+			ref.OutputModalities = append([]string(nil), prev.OutputModalities...)
 		}
 		out = append(out, ref)
 	}
 	return out
-}
-
-func applyModelOverrides(models []ModelRef, overrides map[string]ModelOverride) {
-	for i := range models {
-		override, ok := overrides[models[i].Name]
-		if !ok {
-			continue
-		}
-		if override.MaxContextLength > 0 {
-			models[i].MaxContextLength = override.MaxContextLength
-		}
-		if override.MaxInputTokens > 0 {
-			models[i].MaxInputTokens = override.MaxInputTokens
-		}
-		if override.MaxOutputTokens > 0 {
-			models[i].MaxOutputTokens = override.MaxOutputTokens
-		}
-		if len(override.ThinkingLevels) > 0 {
-			models[i].Thinking = &ThinkingConfig{Levels: append([]string(nil), override.ThinkingLevels...)}
-		}
-	}
 }

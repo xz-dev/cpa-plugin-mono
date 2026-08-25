@@ -64,6 +64,30 @@ func TestMergeModelsKeepsAlias(t *testing.T) {
 	}
 }
 
+func TestMergeModelsResetsAliasButPreservesMetadata(t *testing.T) {
+	thinking := &ThinkingConfig{Levels: []string{"low", "high"}}
+	existing := []ModelRef{{
+		Name: "gpt-x", Alias: "old-alias", DisplayName: "GPT X",
+		MaxContextLength: 128000, MaxInputTokens: 120000, MaxOutputTokens: 32000,
+		Thinking: thinking, InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"},
+	}}
+	got := mergeModels(existing, []string{"gpt-x"}, false)
+	if len(got) != 1 || got[0].Alias != "gpt-x" || got[0].DisplayName != "GPT X" {
+		t.Fatalf("merged=%+v", got)
+	}
+	if got[0].MaxContextLength != 128000 || got[0].MaxInputTokens != 120000 || got[0].MaxOutputTokens != 32000 {
+		t.Fatalf("limits=%+v", got[0])
+	}
+	if got[0].Thinking == nil || strings.Join(got[0].Thinking.Levels, ",") != "low,high" || strings.Join(got[0].InputModalities, ",") != "text,image" || strings.Join(got[0].OutputModalities, ",") != "text" {
+		t.Fatalf("metadata=%+v", got[0])
+	}
+	got[0].Thinking.Levels[0] = "max"
+	got[0].InputModalities[0] = "audio"
+	if thinking.Levels[0] != "low" || existing[0].InputModalities[0] != "text" {
+		t.Fatal("merged metadata aliases existing slices or pointers")
+	}
+}
+
 func TestMergeModelsDedupe(t *testing.T) {
 	got := mergeModels(nil, []string{"a", "a", "b"}, true)
 	if len(got) != 2 {
@@ -76,22 +100,5 @@ func TestMergeModelsKeepsThinking(t *testing.T) {
 	got := mergeModels(existing, []string{"gpt-5.6-sol"}, true)
 	if got[0].Thinking == nil || strings.Join(got[0].Thinking.Levels, ",") != "low,high" {
 		t.Fatalf("thinking=%v", got[0].Thinking)
-	}
-}
-
-func TestApplyModelOverridesWinsLast(t *testing.T) {
-	models := []ModelRef{{
-		Name:             "gpt-5.6-sol",
-		MaxContextLength: 128000,
-		Thinking:         &ThinkingConfig{Levels: []string{"low", "high"}},
-	}}
-	applyModelOverrides(models, map[string]ModelOverride{
-		"gpt-5.6-sol": {MaxContextLength: 1050000, MaxInputTokens: 1000000, MaxOutputTokens: 50000, ThinkingLevels: []string{"none", "medium", "max"}},
-	})
-	if models[0].MaxContextLength != 1050000 || models[0].MaxInputTokens != 1000000 || models[0].MaxOutputTokens != 50000 {
-		t.Fatalf("token limits=%+v", models[0])
-	}
-	if got := strings.Join(models[0].Thinking.Levels, ","); got != "none,medium,max" {
-		t.Fatalf("thinking=%s", got)
 	}
 }

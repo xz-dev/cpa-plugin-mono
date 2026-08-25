@@ -37,14 +37,22 @@ type FileConfig struct {
 }
 
 type ProviderConfig struct {
-	Enabled       bool                     `json:"enabled"`
-	Mode          string                   `json:"mode"`
-	Patterns      []string                 `json:"patterns"`
-	Modelparams   bool                     `json:"modelparams,omitempty"`
-	UpstreamMeta  bool                     `json:"upstream_meta,omitempty"`
-	CodexManifest bool                     `json:"codex_manifest,omitempty"`
-	Modelsdev     bool                     `json:"modelsdev,omitempty"`
-	Overrides     map[string]ModelOverride `json:"overrides,omitempty"`
+	Enabled         bool                     `json:"enabled"`
+	Mode            string                   `json:"mode"`
+	Patterns        []string                 `json:"patterns"`
+	MetadataSources []string                 `json:"metadata_sources,omitempty"`
+	Modelparams     bool                     `json:"modelparams,omitempty"` // legacy, intentionally ignored
+	UpstreamMeta    bool                     `json:"upstream_meta,omitempty"`
+	CodexManifest   bool                     `json:"codex_manifest,omitempty"`
+	Modelsdev       bool                     `json:"modelsdev,omitempty"` // legacy, intentionally ignored
+	Overrides       map[string]ModelOverride `json:"overrides,omitempty"`
+}
+
+type metadataSource struct {
+	ID       string
+	Website  string
+	Provider string
+	AuthType string
 }
 
 type ModelOverride struct {
@@ -55,15 +63,14 @@ type ModelOverride struct {
 }
 
 type compiledProvider struct {
-	Name          string
-	Enabled       bool
-	Mode          string
-	Patterns      []*regexp.Regexp
-	Modelparams   bool
-	UpstreamMeta  bool
-	CodexManifest bool
-	Modelsdev     bool
-	Overrides     map[string]ModelOverride
+	Name            string
+	Enabled         bool
+	Mode            string
+	Patterns        []*regexp.Regexp
+	MetadataSources []metadataSource
+	UpstreamMeta    bool
+	CodexManifest   bool
+	Overrides       map[string]ModelOverride
 }
 
 type runtimeConfig struct {
@@ -156,15 +163,35 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 		if mode != ModeInclude && mode != ModeExclude {
 			return runtimeConfig{}, fmt.Errorf("provider %s: mode must be include or exclude", name)
 		}
+		if spec.Modelparams || spec.Modelsdev {
+			return runtimeConfig{}, fmt.Errorf("provider %s: replace legacy modelparams/modelsdev with metadata_sources", name)
+		}
 		compiled := compiledProvider{
 			Name:          name,
 			Enabled:       spec.Enabled,
 			Mode:          mode,
-			Modelparams:   spec.Modelparams,
 			UpstreamMeta:  spec.UpstreamMeta,
 			CodexManifest: spec.CodexManifest,
-			Modelsdev:     spec.Modelsdev,
 			Overrides:     make(map[string]ModelOverride, len(spec.Overrides)),
+		}
+		seenSources := map[string]struct{}{}
+		seenModelsdev := false
+		for i, rawSource := range spec.MetadataSources {
+			source, err := parseMetadataSource(rawSource)
+			if err != nil {
+				return runtimeConfig{}, fmt.Errorf("provider %s metadata_sources[%d]: %w", name, i, err)
+			}
+			if _, exists := seenSources[source.ID]; exists {
+				return runtimeConfig{}, fmt.Errorf("provider %s metadata_sources[%d]: duplicate source %q", name, i, source.ID)
+			}
+			if source.Website == "modelparams.dev" && seenModelsdev {
+				return runtimeConfig{}, fmt.Errorf("provider %s metadata_sources[%d]: modelparams.dev sources must precede models.dev sources", name, i)
+			}
+			if source.Website == "models.dev" {
+				seenModelsdev = true
+			}
+			seenSources[source.ID] = struct{}{}
+			compiled.MetadataSources = append(compiled.MetadataSources, source)
 		}
 		for model, override := range spec.Overrides {
 			trimmedModel := strings.TrimSpace(model)
@@ -205,6 +232,26 @@ func compileConfig(cfg FileConfig) (runtimeConfig, error) {
 		out.Providers = append(out.Providers, compiled)
 	}
 	return out, nil
+}
+
+func parseMetadataSource(raw string) (metadataSource, error) {
+	if raw != strings.TrimSpace(raw) || raw == "" {
+		return metadataSource{}, fmt.Errorf("source must be a canonical non-empty ID")
+	}
+	parts := strings.Split(raw, "/")
+	source := metadataSource{ID: raw}
+	switch {
+	case len(parts) == 3 && parts[0] == "modelparams.dev" && parts[1] != "" && (parts[2] == "api_key" || parts[2] == "subscription"):
+		source.Website, source.Provider, source.AuthType = parts[0], parts[1], parts[2]
+	case len(parts) == 2 && parts[0] == "models.dev" && parts[1] != "":
+		source.Website, source.Provider = parts[0], parts[1]
+	default:
+		return metadataSource{}, fmt.Errorf("invalid source %q; want modelparams.dev/<provider>/<api_key|subscription> or models.dev/<provider>", raw)
+	}
+	if source.Provider != strings.ToLower(source.Provider) || strings.TrimSpace(source.Provider) != source.Provider {
+		return metadataSource{}, fmt.Errorf("invalid source %q; provider must be lowercase without whitespace", raw)
+	}
+	return source, nil
 }
 
 func loadJSONFile(path string) (runtimeConfig, []byte, error) {

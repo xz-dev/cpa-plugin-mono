@@ -20,7 +20,27 @@
     .grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: start; }
     textarea.patterns, textarea.overrides { width: 100%; min-height: 72px; font-family: ui-monospace, monospace; font-size: 13px; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 800px) { .cols, .grid { grid-template-columns: 1fr; } }
+    .source-group { border: 1px solid var(--bd); border-radius: 10px; padding: 10px; margin: 8px 0; }
+    .source-group h4 { margin: 0 0 4px; font-size: .95rem; }
+    .source-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--bd); }
+    .source-row:last-child { border-bottom: 0; }
+    .source-id { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; }
+    .source-actions { display: flex; gap: 4px; }
+    .source-actions button { padding: 3px 7px; }
+    .unavailable { color: #c62828; font-size: .8rem; }
+    .metadata-list { margin-top: 12px; }
+    .metadata-model { border: 1px solid var(--bd); border-radius: 8px; margin: 7px 0; }
+    .metadata-model summary { cursor: pointer; padding: 9px 11px; font-family: ui-monospace, monospace; font-weight: 600; }
+    .metadata-table-wrap { overflow-x: auto; padding: 0 10px 10px; }
+    .metadata-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .metadata-table th, .metadata-table td { border-bottom: 1px solid var(--bd); padding: 7px; text-align: left; vertical-align: top; }
+    .metadata-table th { white-space: nowrap; }
+    .metadata-value, .metadata-source { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    .status-authoritative, .status-upstream, .status-override { color: #2e7d32; }
+    .status-completed { color: #1565c0; }
+    .status-skipped { color: #c62828; }
+    .catalog-errors { border-left: 3px solid #c62828; padding-left: 9px; }
+    @media (max-width: 800px) { .cols, .grid { grid-template-columns: 1fr; } .source-row { grid-template-columns: 1fr; } }
     .list { border: 1px solid var(--bd); border-radius: 8px; padding: 8px; max-height: 240px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
     .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--bd); font-size: .8rem; }
     label.inline { display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }
@@ -77,6 +97,8 @@
     const api = location.origin + "/v0/management/plugins/auto-pull-models";
     let cfg = {interval:"1h", management_base_url:"http://127.0.0.1:8317", management_key_env:"", management_key_file:"/CLIProxyAPI/mgmt.key", keep_existing_aliases:true, providers:{}};
     let hostProviders = [];
+    let metadataSources = [];
+    let metadataSourceErrors = {};
 
     // Host auth: same as cpa-key-policy / cpa-account-config-manager.
     const ENC_PREFIX = "enc::v1::";
@@ -181,6 +203,117 @@
       return data;
     }
 
+    function sourceWebsite(id) {
+      if (String(id).startsWith("modelparams.dev/")) return "modelparams.dev";
+      if (String(id).startsWith("models.dev/")) return "models.dev";
+      return "";
+    }
+
+    function sourceInfo(id) {
+      return metadataSources.find(source => source.id === id);
+    }
+
+    function configuredSources(provider, website) {
+      const ids = Array.isArray(provider.metadata_sources) ? provider.metadata_sources : [];
+      return ids.filter(id => sourceWebsite(id) === website);
+    }
+
+    function sourceRowHTML(id) {
+      const info = sourceInfo(id);
+      return `<div class="source-row" data-source-id="${escapeHtml(id)}">
+        <div>
+          <div class="source-id">${escapeHtml(id)}</div>
+          ${info ? "" : `<div class="unavailable">当前目录中不可用；保留此配置，避免保存时静默删除</div>`}
+        </div>
+        <div class="source-actions">
+          <button type="button" data-source-action="up" title="上移" aria-label="上移来源">↑</button>
+          <button type="button" data-source-action="down" title="下移" aria-label="下移来源">↓</button>
+          <button type="button" data-source-action="remove" aria-label="删除来源">删除</button>
+        </div>
+      </div>`;
+    }
+
+    function sourceGroupHTML(provider, website) {
+      const authoritative = website === "modelparams.dev";
+      const ids = configuredSources(provider, website);
+      const error = metadataSourceErrors[website];
+      return `<div class="source-group" data-source-group="${website}">
+        <h4>${authoritative ? "1. modelparams.dev（第一权威）" : "2. models.dev（第二权威，仅补缺）"}</h4>
+        <div class="muted">${authoritative
+          ? "provider / api_key 与 provider / subscription 是不同来源；按此组顺序查找每个字段。"
+          : "只补 modelparams.dev、上游和已有配置仍未提供的字段，不会覆盖前序值。"}</div>
+        ${error ? `<p class="err">目录获取失败：${escapeHtml(error)}</p>` : ""}
+        <div data-source-list="${website}">
+          ${ids.length ? ids.map(sourceRowHTML).join("") : `<div class="muted source-empty">尚未选择此网站的来源</div>`}
+        </div>
+        <div class="row">
+          <select data-source-select="${website}"></select>
+          <button type="button" data-source-add="${website}">添加一个来源</button>
+        </div>
+      </div>`;
+    }
+
+    function selectedSourceIDs(card, website) {
+      const list = card.querySelector(`[data-source-list="${website}"]`);
+      return Array.from(list.querySelectorAll(".source-row")).map(row => row.dataset.sourceId);
+    }
+
+    function refreshSourceGroup(card, website) {
+      const list = card.querySelector(`[data-source-list="${website}"]`);
+      const rows = Array.from(list.querySelectorAll(".source-row"));
+      if (!rows.length && !list.querySelector(".source-empty")) {
+        list.innerHTML = `<div class="muted source-empty">尚未选择此网站的来源</div>`;
+      }
+      rows.forEach((row, index) => {
+        row.querySelector('[data-source-action="up"]').disabled = index === 0;
+        row.querySelector('[data-source-action="down"]').disabled = index === rows.length - 1;
+      });
+      const selected = new Set(rows.map(row => row.dataset.sourceId));
+      const available = metadataSources.filter(source => source.website === website && !selected.has(source.id));
+      const select = card.querySelector(`[data-source-select="${website}"]`);
+      const add = card.querySelector(`[data-source-add="${website}"]`);
+      select.innerHTML = available.length
+        ? available.map(source => `<option value="${escapeHtml(source.id)}">${escapeHtml(source.label || source.id)}</option>`).join("")
+        : `<option value="">没有其它可选来源</option>`;
+      select.disabled = !available.length;
+      add.disabled = !available.length;
+    }
+
+    function bindSourceRow(card, row, website) {
+      row.querySelectorAll("[data-source-action]").forEach(button => {
+        button.onclick = () => {
+          const list = row.parentElement;
+          const action = button.dataset.sourceAction;
+          if (action === "remove") {
+            row.remove();
+          } else if (action === "up") {
+            const previous = row.previousElementSibling;
+            if (previous && previous.classList.contains("source-row")) list.insertBefore(row, previous);
+          } else if (action === "down") {
+            const next = row.nextElementSibling;
+            if (next && next.classList.contains("source-row")) list.insertBefore(next, row);
+          }
+          refreshSourceGroup(card, website);
+        };
+      });
+    }
+
+    function bindSourceGroup(card, website) {
+      const list = card.querySelector(`[data-source-list="${website}"]`);
+      list.querySelectorAll(".source-row").forEach(row => bindSourceRow(card, row, website));
+      const select = card.querySelector(`[data-source-select="${website}"]`);
+      card.querySelector(`[data-source-add="${website}"]`).onclick = () => {
+        const id = select.value;
+        if (!id) return;
+        const empty = list.querySelector(".source-empty");
+        if (empty) empty.remove();
+        list.insertAdjacentHTML("beforeend", sourceRowHTML(id));
+        bindSourceRow(card, list.lastElementChild, website);
+        refreshSourceGroup(card, website);
+      };
+      refreshSourceGroup(card, website);
+    }
+
     function formConfig() {
       const providers = {};
       document.querySelectorAll("[data-card]").forEach(card => {
@@ -191,14 +324,20 @@
         if (!overrides || Array.isArray(overrides) || typeof overrides !== "object") {
           throw new Error(`${name} 的模型覆盖必须是 JSON object`);
         }
+        const metadataSourceIDs = [
+          ...selectedSourceIDs(card, "modelparams.dev"),
+          ...selectedSourceIDs(card, "models.dev")
+        ];
+        if (card.dataset.legacyMetadata === "true" && !metadataSourceIDs.length) {
+          throw new Error(`${name} 使用旧 modelparams/modelsdev 开关；请先手动选择完整元数据来源`);
+        }
         providers[name] = {
           enabled: card.querySelector(".en").checked,
           mode: card.querySelector(".mode").value,
           patterns,
-          modelparams: card.querySelector(".mp").checked,
+          metadata_sources: metadataSourceIDs,
           upstream_meta: card.querySelector(".um").checked,
           codex_manifest: card.querySelector(".cm").checked,
-          modelsdev: card.querySelector(".mdv").checked,
           overrides
         };
       });
@@ -218,37 +357,39 @@
         box.innerHTML = "<p class='muted'>还没有要同步的渠道。上面下拉框选一个 CPA 里已有的 OpenAI 兼容渠道，点添加。</p>";
         return;
       }
-      names.forEach(name => {
-        const p = cfg.providers[name] || {enabled:true, mode:"include", patterns:[], modelparams:false};
+      names.forEach((name, cardIndex) => {
+        const p = cfg.providers[name] || {enabled:true, mode:"include", patterns:[], metadata_sources:[]};
         const host = hostProviders.find(h => h.name === name);
+        const radioName = `mode-${cardIndex}`;
         const card = document.createElement("div");
         card.className = "card";
         card.dataset.card = name;
+        card.dataset.legacyMetadata = p.modelparams || p.modelsdev ? "true" : "false";
         card.innerHTML = `
           <h3>${escapeHtml(name)} ${host ? `<span class="pill">${host.model_count} 个现有模型</span>` : `<span class="pill">CPA 中未找到</span>`}</h3>
+          ${p.modelparams || p.modelsdev ? `<p class="err">检测到旧 modelparams/modelsdev 开关。保存前必须从下面目录中手动选择完整来源；保存后旧开关会被移除。</p>` : ""}
           <div class="grid">
             <div>启用</div><div><label class="inline"><input class="en" type="checkbox" ${p.enabled?"checked":""}/> 同步这个渠道</label></div>
-            <div>推理强度</div><div>
+            <div>上游元数据</div><div>
               <label class="inline"><input class="cm" type="checkbox" ${p.codex_manifest?"checked":""}/> 请求 Codex manifest（client_version=1.0.0）</label>
               <div class="muted">仅用于支持 Codex 模型目录的上游，例如 ZCode；其它渠道保持关闭。</div>
-              <label class="inline"><input class="um" type="checkbox" ${p.upstream_meta?"checked":""}/> 用上游 /models 填写 reasoning / 模态</label>
-              <div class="muted">复用这次拉取的上游目录，不再额外请求；支持 OpenRouter 和 Codex manifest。</div>
-              <label class="inline"><input class="mp" type="checkbox" ${p.modelparams?"checked":""}/> 用 modelparams.dev 填写 thinking.levels</label>
-              <div class="muted">本次刷新会拉一次 Full catalog，所有勾选的渠道共用。上游已命中的档位不会被覆盖。</div>
+              <label class="inline"><input class="um" type="checkbox" ${p.upstream_meta?"checked":""}/> 使用上游 /models 元数据</label>
+              <div class="muted">复用本次拉取目录中的 reasoning、上下文/输出上限和模态；不额外请求。</div>
             </div>
-            <div>模型上限</div><div>
-              <label class="inline"><input class="mdv" type="checkbox" ${p.modelsdev?"checked":""}/> 填写 max-context-length / max-output-tokens</label>
-              <div class="muted">上游已声明的 context / output 优先；空缺用 models.dev 补。勾选的渠道共用一次 models.dev catalog。</div>
+            <div>外部元数据来源</div><div>
+              <div class="muted">每个渠道独立配置；只查询以下列表，不猜 provider，不查询列表外来源。</div>
+              ${sourceGroupHTML(p, "modelparams.dev")}
+              ${sourceGroupHTML(p, "models.dev")}
             </div>
             <div>模型覆盖</div>
             <div>
               <textarea class="overrides" placeholder='{"模型 id":{"max_context_length":262144,"max_input_tokens":240000,"max_output_tokens":22144,"thinking_levels":["low","high"]}}'>${escapeHtml(JSON.stringify(p.overrides||{}, null, 2))}</textarea>
-              <div class="muted">JSON object，key 精确匹配上游模型 id。同步时最后生效，不会被上游目录覆盖。</div>
+              <div class="muted">JSON object，key 精确匹配上游模型 id。同步时最后生效，并在报告中标记为 manual override。</div>
             </div>
             <div>规则</div>
             <div>
-              <label class="inline"><input type="radio" name="mode-${escapeHtml(name)}" value="include" ${p.mode!=="exclude"?"checked":""}/> 只保留匹配</label>
-              <label class="inline"><input type="radio" name="mode-${escapeHtml(name)}" value="exclude" ${p.mode==="exclude"?"checked":""}/> 排除匹配</label>
+              <label class="inline"><input class="mode-radio" type="radio" name="${radioName}" value="include" ${p.mode!=="exclude"?"checked":""}/> 只保留匹配</label>
+              <label class="inline"><input class="mode-radio" type="radio" name="${radioName}" value="exclude" ${p.mode==="exclude"?"checked":""}/> 排除匹配</label>
               <select class="mode" hidden>
                 <option value="include" ${p.mode!=="exclude"?"selected":""}>include</option>
                 <option value="exclude" ${p.mode==="exclude"?"selected":""}>exclude</option>
@@ -264,9 +405,11 @@
             <button data-preview>试运行这一条</button>
             <button data-del>移除</button>
           </div>`;
-        card.querySelectorAll(`input[name="mode-${name}"]`).forEach(r => {
-          r.onchange = () => { card.querySelector(".mode").value = r.value; };
+        card.querySelectorAll(".mode-radio").forEach(radio => {
+          radio.onchange = () => { card.querySelector(".mode").value = radio.value; };
         });
+        bindSourceGroup(card, "modelparams.dev");
+        bindSourceGroup(card, "models.dev");
         card.querySelector("[data-del]").onclick = () => { delete cfg.providers[name]; renderCards(); fillAdd(); };
         card.querySelector("[data-preview]").onclick = () => run("preview", name);
         box.appendChild(card);
@@ -287,20 +430,85 @@
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    function metadataValue(value) {
+      if (value === undefined || value === null || value === "") return "—";
+      if (Array.isArray(value)) return value.join(", ");
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+
+    function statusLabel(status) {
+      return ({
+        upstream: "上游提供",
+        authoritative: "权威来源",
+        completed: "第二来源补全",
+        preserved: "保留已有值",
+        override: "手工覆盖",
+        skipped: "跳过"
+      })[status] || status || "未知";
+    }
+
+    function reasonLabel(reason) {
+      return ({
+        "supplied by enabled upstream metadata": "启用的上游 /models 提供",
+        "supplied by upstream metadata before models.dev fallback": "在 models.dev 补全前，优先采用上游 /models 提供的上下文或输出上限",
+        "first configured authoritative source supplying this field": "配置顺序中第一个提供此字段的权威来源",
+        "concrete generation-length range.max from authoritative source": "权威来源给出了 generation-length 的具体 range.max",
+        "secondary source filled a field missing from authoritative and earlier sources": "权威来源和更早来源均未提供，由第二权威来源补全",
+        "copied from existing CPA model configuration": "从 CPA 现有模型配置保留",
+        "explicit per-model override applied last": "逐模型手工覆盖最后生效",
+        "tried sources supplied no value": "已按显示顺序尝试来源，但均未提供此字段",
+        "no configured source supports this field": "当前配置来源均不支持自动提供此字段",
+        "no automatic source supports this field; preserve an existing value or use manual override": "没有自动来源支持此字段；请保留已有值或使用手工覆盖"
+      })[reason] || reason || "—";
+    }
+
+    function renderModelMetadata(model) {
+      const fields = Array.isArray(model.fields) ? model.fields : [];
+      return `<details class="metadata-model">
+        <summary>${escapeHtml(model.model || "（未知模型）")}</summary>
+        <div class="metadata-table-wrap">
+          <table class="metadata-table">
+            <thead><tr><th>参数</th><th>最终值</th><th>来源</th><th>状态</th><th>尝试顺序</th><th>原因</th></tr></thead>
+            <tbody>${fields.map(field => {
+              const status = ["upstream","authoritative","completed","preserved","override","skipped"].includes(field.status) ? field.status : "";
+              const tried = Array.isArray(field.tried_sources) ? field.tried_sources.join(" → ") : "";
+              return `<tr>
+                <td class="metadata-source">${escapeHtml(field.field || "")}</td>
+                <td class="metadata-value">${escapeHtml(metadataValue(field.value))}</td>
+                <td class="metadata-source">${escapeHtml(field.source || "—")}</td>
+                <td class="status-${status}">${escapeHtml(statusLabel(field.status))}</td>
+                <td class="metadata-source">${escapeHtml(tried || "—")}</td>
+                <td>${escapeHtml(reasonLabel(field.reason))}</td>
+              </tr>`;
+            }).join("") || `<tr><td colspan="6" class="muted">没有字段明细</td></tr>`}</tbody>
+          </table>
+        </div>
+      </details>`;
+    }
+
     function renderReport(data) {
       const el = document.getElementById("result");
       if (!data || !data.providers) {
         el.innerHTML = `<p class="err">${escapeHtml(data && data.error || "没有结果")}</p>`;
         return;
       }
-      el.innerHTML = data.providers.map(p => {
-        const klass = p.error ? "err" : "ok";
+      el.innerHTML = data.providers.map(provider => {
+        const klass = provider.error ? "err" : "ok";
+        const catalogErrors = Array.isArray(provider.catalog_errors) ? provider.catalog_errors : [];
+        const metadata = Array.isArray(provider.metadata) ? provider.metadata : [];
         return `<div class="card">
-          <h3>${escapeHtml(p.name)} <span class="pill">${p.dry_run?"试运行":"已写入"}</span></h3>
-          <p class="${klass}">${p.error ? escapeHtml(p.error) : `上游 ${p.fetched} → 保留 ${p.kept}，丢掉 ${p.dropped}，将写入 ${p.written}（当前 ${p.current}）${p.unchanged?"，和现在一样":""}${p.thinking_matched||p.thinking_missed?`；推理强度命中 ${p.thinking_matched||0}，未命中 ${p.thinking_missed||0}`:""}${p.modelparams_error?`；modelparams：${escapeHtml(p.modelparams_error)}`:""}`}</p>
+          <h3>${escapeHtml(provider.name)} <span class="pill">${provider.dry_run?"试运行":"已写入"}</span></h3>
+          <p class="${klass}">${provider.error ? escapeHtml(provider.error) : `上游 ${provider.fetched} → 保留 ${provider.kept}，丢掉 ${provider.dropped}，将写入 ${provider.written}（当前 ${provider.current}）${provider.unchanged?"，和现在一样":""}${provider.thinking_matched||provider.thinking_missed?`；推理强度来源命中 ${provider.thinking_matched||0}，未命中 ${provider.thinking_missed||0}`:""}`}</p>
+          ${catalogErrors.length ? `<div class="catalog-errors"><strong>外部目录错误</strong>${catalogErrors.map(error => `<div class="err">${escapeHtml(error)}</div>`).join("")}</div>` : ""}
           <div class="cols">
-            <div><div class="muted">将保留</div><div class="list">${(p.kept_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
-            <div><div class="muted">将丢掉</div><div class="list">${(p.dropped_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
+            <div><div class="muted">将保留</div><div class="list">${(provider.kept_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
+            <div><div class="muted">将丢掉</div><div class="list">${(provider.dropped_samples||[]).map(escapeHtml).join("<br>") || "（空）"}</div></div>
+          </div>
+          <div class="metadata-list">
+            <h4>逐模型参数来源（${metadata.length} 个模型）</h4>
+            <div class="muted">展开模型查看每个参数由哪个完整来源提供、为何补全，或为何跳过。</div>
+            ${metadata.map(renderModelMetadata).join("") || `<p class="muted">本次没有生成模型字段明细。</p>`}
           </div>
         </div>`;
       }).join("") + (data.error ? `<p class="err">${escapeHtml(data.error)}</p>` : "");
@@ -318,10 +526,17 @@
       document.getElementById("interval").value = cfg.interval || "1h";
       document.getElementById("keepAlias").checked = cfg.keep_existing_aliases !== false;
       try {
-        const host = await call("GET", "/compat-providers");
+        const [host, sources] = await Promise.all([
+          call("GET", "/compat-providers"),
+          call("GET", "/metadata-sources")
+        ]);
         hostProviders = host.providers || [];
+        metadataSources = sources.sources || [];
+        metadataSourceErrors = sources.errors || {};
       } catch (e) {
         hostProviders = [];
+        metadataSources = [];
+        metadataSourceErrors = {"modelparams.dev": e.message, "models.dev": e.message};
         document.getElementById("banner").textContent = e.message;
         renderCards();
         fillAdd();
@@ -336,7 +551,9 @@
       }
       document.getElementById("banner").textContent = "正在刷新上游目录…";
       await run("preview");
-      document.getElementById("banner").textContent = "已自动刷新。确认无误后再写入。";
+      document.getElementById("banner").textContent = Object.keys(metadataSourceErrors).length
+        ? `已自动刷新；部分外部目录不可用：${Object.keys(metadataSourceErrors).join("、")}`
+        : "已自动刷新。确认无误后再写入。";
     }
 
     async function run(kind, only) {
@@ -358,7 +575,7 @@
     document.getElementById("addBtn").onclick = () => {
       const name = document.getElementById("addSelect").value;
       if (!name) return;
-      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], modelparams:false, upstream_meta:false, modelsdev:false, overrides:{}};
+      cfg.providers[name] = {enabled:true, mode:"exclude", patterns:[], metadata_sources:[], upstream_meta:false, overrides:{}};
       renderCards();
       fillAdd();
     };

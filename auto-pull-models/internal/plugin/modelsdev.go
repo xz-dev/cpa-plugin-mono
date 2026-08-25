@@ -21,9 +21,14 @@ type modelsdevModel struct {
 	Output   []string
 }
 
-type modelsdevCatalog struct {
+type modelsdevProviderCatalog struct {
 	byKey  map[string]modelsdevModel
+	byID   map[string][]modelsdevModel
 	byBare map[string][]modelsdevModel
+}
+
+type modelsdevCatalog struct {
+	providers map[string]*modelsdevProviderCatalog
 }
 
 func (s *Service) fetchModelsdevCatalog(url string) (*modelsdevCatalog, error) {
@@ -61,11 +66,17 @@ func parseModelsdevCatalog(raw []byte) (*modelsdevCatalog, error) {
 	if err := json.Unmarshal(raw, &providers); err != nil {
 		return nil, fmt.Errorf("modelsdev: %w", err)
 	}
-	cat := &modelsdevCatalog{
-		byKey:  map[string]modelsdevModel{},
-		byBare: map[string][]modelsdevModel{},
-	}
+	cat := &modelsdevCatalog{providers: map[string]*modelsdevProviderCatalog{}}
 	for provider, payload := range providers {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider == "" {
+			continue
+		}
+		pc := &modelsdevProviderCatalog{
+			byKey:  map[string]modelsdevModel{},
+			byID:   map[string][]modelsdevModel{},
+			byBare: map[string][]modelsdevModel{},
+		}
 		for key, model := range payload.Models {
 			id := strings.TrimSpace(model.ID)
 			if id == "" {
@@ -74,13 +85,8 @@ func parseModelsdevCatalog(raw []byte) (*modelsdevCatalog, error) {
 			if id == "" {
 				continue
 			}
-			// Aggregator entries key models as "vendor/id"; bare entries are plain ids.
-			fullKey := key
-			if !strings.Contains(key, "/") {
-				fullKey = provider + "/" + key
-			}
 			entry := modelsdevModel{
-				FullKey:  fullKey,
+				FullKey:  strings.TrimSpace(key),
 				Provider: provider,
 				ID:       id,
 				Context:  model.Limit.Context,
@@ -88,56 +94,66 @@ func parseModelsdevCatalog(raw []byte) (*modelsdevCatalog, error) {
 				Input:    model.Modalities.Input,
 				Output:   model.Modalities.Output,
 			}
-			if entry.Context <= 0 && entry.MaxOut <= 0 && len(entry.Input) == 0 {
-				continue // placeholder rows with zero limits carry no data
+			if entry.Context <= 0 && entry.MaxOut <= 0 && len(entry.Input) == 0 && len(entry.Output) == 0 {
+				continue
 			}
-			cat.byKey[strings.ToLower(fullKey)] = entry
-			bare := id
+			pc.byKey[strings.ToLower(entry.FullKey)] = entry
+			pc.byID[strings.ToLower(entry.ID)] = append(pc.byID[strings.ToLower(entry.ID)], entry)
+			bare := entry.ID
 			if i := strings.LastIndex(bare, "/"); i >= 0 {
 				bare = bare[i+1:]
 			}
-			lower := strings.ToLower(bare)
-			cat.byBare[lower] = append(cat.byBare[lower], entry)
+			pc.byBare[strings.ToLower(bare)] = append(pc.byBare[strings.ToLower(bare)], entry)
+		}
+		if len(pc.byKey) > 0 {
+			cat.providers[provider] = pc
 		}
 	}
-	if len(cat.byKey) == 0 {
+	if len(cat.providers) == 0 {
 		return nil, fmt.Errorf("modelsdev: empty catalog")
-	}
-	for _, list := range cat.byBare {
-		sort.Slice(list, func(i, j int) bool { return modelsdevRank(list[i]) < modelsdevRank(list[j]) })
 	}
 	return cat, nil
 }
 
-// modelsdevRank prefers the OpenRouter listing when the same bare id appears
-// under several vendors, then falls back to lexicographic order.
-func modelsdevRank(m modelsdevModel) string {
-	if strings.EqualFold(m.Provider, "openrouter") {
-		return "\x00" + m.FullKey
+func (c *modelsdevCatalog) lookupSource(source metadataSource, id string) (modelsdevModel, bool) {
+	if c == nil || source.Website != "models.dev" {
+		return modelsdevModel{}, false
 	}
-	return m.FullKey
-}
-
-// lookup resolves a model id: exact provider-qualified key first, then the
-// lexicographically first bare-id match. ponytail: first-match is a heuristic;
-// add per-provider vendor hints if ambiguous limits ever cause mismatches.
-func (c *modelsdevCatalog) lookup(id string) (modelsdevModel, bool) {
-	if c == nil {
+	pc := c.providers[source.Provider]
+	if pc == nil {
 		return modelsdevModel{}, false
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return modelsdevModel{}, false
 	}
-	if entry, ok := c.byKey[strings.ToLower(id)]; ok {
+	if entry, ok := pc.byKey[strings.ToLower(id)]; ok {
 		return entry, true
 	}
-	bare := id
-	if i := strings.LastIndex(bare, "/"); i >= 0 {
-		bare = bare[i+1:]
+	if entries := uniqueModelsdevEntries(pc.byID[strings.ToLower(id)]); len(entries) == 1 {
+		return entries[0], true
 	}
-	if list := c.byBare[strings.ToLower(bare)]; len(list) > 0 {
-		return list[0], true
+	if strings.Count(id, "/") != 1 {
+		return modelsdevModel{}, false
+	}
+	bare := id[strings.IndexByte(id, '/')+1:]
+	if entries := uniqueModelsdevEntries(pc.byBare[strings.ToLower(bare)]); len(entries) == 1 {
+		return entries[0], true
 	}
 	return modelsdevModel{}, false
+}
+
+func uniqueModelsdevEntries(entries []modelsdevModel) []modelsdevModel {
+	seen := map[string]struct{}{}
+	out := make([]modelsdevModel, 0, len(entries))
+	for _, entry := range entries {
+		key := strings.ToLower(entry.FullKey)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].FullKey < out[j].FullKey })
+	return out
 }

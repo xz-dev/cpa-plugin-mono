@@ -66,20 +66,23 @@ func TestParseAndMatchModelparams(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []struct {
+		source  metadataSource
 		id      string
 		want    string
 		missing bool
 	}{
-		{"gpt-5.6-sol", "none,low,medium,high,xhigh,max", false},
-		{"openai/gpt-5.6-sol", "none,low,medium,high,xhigh", false},
-		{"claude-opus-4-6-thinking", "low,medium,high,max", false},
-		{"gemini-3-flash", "minimal,low,medium,high", false},
-		{"kimi-k3", "low,high,max", false},
-		{"grok-4.20-0309-non-reasoning", "", true},
-		{"gpt-image-1", "", true},
+		{metadataSource{Website: "modelparams.dev", Provider: "openai", AuthType: "subscription"}, "gpt-5.6-sol", "none,low,medium,high,xhigh,max", false},
+		{metadataSource{Website: "modelparams.dev", Provider: "openai", AuthType: "api_key"}, "openai/gpt-5.6-sol", "none,low,medium,high,xhigh", false},
+		{metadataSource{Website: "modelparams.dev", Provider: "anthropic", AuthType: "api_key"}, "claude-opus-4-6-thinking", "", true},
+		{metadataSource{Website: "modelparams.dev", Provider: "google", AuthType: "api_key"}, "gemini-3-flash", "", true},
+		{metadataSource{Website: "modelparams.dev", Provider: "moonshot", AuthType: "api_key"}, "kimi-k3", "low,high,max", false},
+		{metadataSource{Website: "modelparams.dev", Provider: "xai", AuthType: "api_key"}, "grok-4.20-0309-non-reasoning", "", true},
+		{metadataSource{Website: "modelparams.dev", Provider: "openai", AuthType: "api_key"}, "gpt-image-1", "", true},
 	}
 	for _, tc := range cases {
-		got, ok := cat.levelsFor(tc.id)
+		entry, ok := cat.lookupSource(tc.source, tc.id)
+		got := extractThinkingLevels(entry.Params)
+		ok = ok && len(got) > 0
 		if tc.missing {
 			if ok {
 				t.Fatalf("%s: expected miss, got %v", tc.id, got)
@@ -92,6 +95,36 @@ func TestParseAndMatchModelparams(t *testing.T) {
 		if strings.Join(got, ",") != tc.want {
 			t.Fatalf("%s: got %v want %s", tc.id, got, tc.want)
 		}
+	}
+}
+
+func TestModelparamsLookupUsesOnlyExactOrSinglePrefixIDs(t *testing.T) {
+	cat, err := parseModelparamsCatalog([]byte(`{"models":[
+		{"provider":"openai","authType":"api_key","model":"foo","params":[{"path":"reasoning_effort","group":"reasoning","type":"enum","values":["low","high"]}]},
+		{"provider":"openai","authType":"api_key","model":"bar","params":[{"path":"reasoning_effort","group":"reasoning","type":"enum","values":["high"]}]}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := metadataSource{Website: "modelparams.dev", Provider: "openai", AuthType: "api_key"}
+	for _, id := range []string{"foo-preview", "foo-thinking", "foo:variant", "vendor/nested/foo"} {
+		if _, ok := cat.lookupSource(source, id); ok {
+			t.Fatalf("semantic variant %q must not match foo", id)
+		}
+	}
+	if _, ok := cat.lookupSource(source, "openai/bar"); !ok {
+		t.Fatal("single provider prefix must resolve exact bare catalog id")
+	}
+	if _, ok := cat.lookupSource(source, "foo"); !ok {
+		t.Fatal("exact catalog id must match")
+	}
+
+	previewOnly, err := parseModelparamsCatalog([]byte(`{"models":[{"provider":"openai","authType":"api_key","model":"foo-preview","params":[{"path":"reasoning_effort","group":"reasoning","type":"enum","values":["high"]}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := previewOnly.lookupSource(source, "foo"); ok {
+		t.Fatal("foo must not match foo-preview")
 	}
 }
 

@@ -58,15 +58,6 @@ func TestParseCodexManifest(t *testing.T) {
 	if got := cpaModalities(entries[0].Input); strings.Join(got, ",") != "text,image" {
 		t.Fatalf("modalities=%v", got)
 	}
-
-	models := []ModelRef{{Name: "glm-5.3"}, {Name: "glm-5.3[1m]"}}
-	matched, missed, _ := applyUpstreamMeta(models, map[string]upstreamEntry{
-		entries[0].ID: entries[0],
-		entries[1].ID: entries[1],
-	})
-	if matched != 2 || missed != 0 || strings.Join(models[1].Thinking.Levels, ",") != "low,high,max" {
-		t.Fatalf("matched=%d missed=%d models=%v", matched, missed, models)
-	}
 }
 
 func TestParseCodexManifestConfig(t *testing.T) {

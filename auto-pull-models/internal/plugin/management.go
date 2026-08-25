@@ -20,6 +20,7 @@ func (s *Service) ManagementRoutes() pluginapi.ManagementRegistrationResponse {
 			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/json", Description: "Read auto-pull-models JSON config"},
 			{Method: http.MethodPut, Path: "/v0/management/plugins/auto-pull-models/json", Description: "Write auto-pull-models JSON config"},
 			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/compat-providers", Description: "List CPA openai-compatibility providers"},
+			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/metadata-sources", Description: "List selectable external metadata sources"},
 			{Method: http.MethodPost, Path: "/v0/management/plugins/auto-pull-models/preview", Description: "Dry-run model sync without writing"},
 			{Method: http.MethodPost, Path: "/v0/management/plugins/auto-pull-models/sync", Description: "Run model list sync now"},
 		},
@@ -45,6 +46,8 @@ func (s *Service) HandleManagement(req pluginapi.ManagementRequest) pluginapi.Ma
 			return jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		}
 		return jsonResponse(http.StatusOK, map[string]any{"providers": list})
+	case req.Method == http.MethodGet && strings.HasSuffix(path, "/metadata-sources"):
+		return jsonResponse(http.StatusOK, s.ListMetadataSources())
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/json"):
 		return s.readConfigResponse()
 	case req.Method == http.MethodPut && strings.HasSuffix(path, "/json"):

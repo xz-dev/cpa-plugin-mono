@@ -2,7 +2,7 @@ package plugin
 
 import "testing"
 
-func TestParseAndMatchModelsdev(t *testing.T) {
+func TestParseAndMatchModelsdevSelectedProvider(t *testing.T) {
 	raw := []byte(`{
 		"openai": {"models": {
 			"gpt-4o": {"id": "gpt-4o", "limit": {"context": 128000, "output": 16384}, "modalities": {"input": ["text","image"], "output": ["text"]}},
@@ -16,39 +16,57 @@ func TestParseAndMatchModelsdev(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Exact provider-qualified key.
-	if e, ok := cat.lookup("zai-org/glm-5.2"); !ok || e.Context != 1048576 || e.MaxOut != 131072 {
+	hpc := metadataSource{Website: "models.dev", Provider: "hpc-ai"}
+	if e, ok := cat.lookupSource(hpc, "zai-org/glm-5.2"); !ok || e.Context != 1048576 || e.MaxOut != 131072 {
 		t.Fatalf("qualified lookup: %+v ok=%v", e, ok)
 	}
-	// Bare id resolves through the bare index.
-	if e, ok := cat.lookup("glm-5.2"); !ok || e.MaxOut != 131072 {
-		t.Fatalf("bare lookup: %+v ok=%v", e, ok)
+	if e, ok := cat.lookupSource(hpc, "glm-5.2"); !ok || e.MaxOut != 131072 {
+		t.Fatalf("exact catalog id lookup: %+v ok=%v", e, ok)
 	}
-	// Plain provider entry.
-	if e, ok := cat.lookup("gpt-4o"); !ok || e.Context != 128000 || e.MaxOut != 16384 {
+	openai := metadataSource{Website: "models.dev", Provider: "openai"}
+	if e, ok := cat.lookupSource(openai, "gpt-4o"); !ok || e.Context != 128000 || e.MaxOut != 16384 {
 		t.Fatalf("plain lookup: %+v ok=%v", e, ok)
 	}
-	// Zero-limit rows are dropped.
-	if _, ok := cat.lookup("gpt-image-1.5"); ok {
-		t.Fatal("zero-limit entry must be skipped")
+	if _, ok := cat.lookupSource(openai, "gpt-image-1.5"); ok {
+		t.Fatal("empty entry must be skipped")
 	}
-	// Unknown id.
-	if _, ok := cat.lookup("nope"); ok {
-		t.Fatal("unknown id must not match")
+	if _, ok := cat.lookupSource(openai, "glm-5.2"); ok {
+		t.Fatal("lookup must not leave selected provider")
 	}
 }
 
-func TestModelsdevPrefersOpenRouterThenLexicographic(t *testing.T) {
+func TestModelsdevAmbiguousBareModelMisses(t *testing.T) {
 	cat, err := parseModelsdevCatalog([]byte(`{
-		"zgate": {"models": {"glm-x": {"id": "glm-x", "limit": {"context": 111, "output": 1}}}},
-		"openrouter": {"models": {"z-ai/glm-x": {"id": "glm-x", "limit": {"context": 222, "output": 2}}}},
-		"agg-b": {"models": {"glm-x": {"id": "glm-x", "limit": {"context": 333, "output": 3}}}}
+		"openrouter": {"models": {
+			"vendor-a/glm-x": {"id": "vendor-a/glm-x", "limit": {"context": 111}},
+			"vendor-b/glm-x": {"id": "vendor-b/glm-x", "limit": {"context": 222}}
+		}}
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e, ok := cat.lookup("glm-x"); !ok || e.Context != 222 {
-		t.Fatalf("openrouter must win: %+v ok=%v", e, ok)
+	source := metadataSource{Website: "models.dev", Provider: "openrouter"}
+	if _, ok := cat.lookupSource(source, "glm-x"); ok {
+		t.Fatal("ambiguous bare id must miss")
+	}
+	if e, ok := cat.lookupSource(source, "vendor-b/glm-x"); !ok || e.Context != 222 {
+		t.Fatalf("exact key must match: %+v ok=%v", e, ok)
+	}
+}
+
+func TestModelsdevSinglePrefixFallbackRejectsNestedCPAID(t *testing.T) {
+	cat, err := parseModelsdevCatalog([]byte(`{
+		"openrouter": {"models": {"foo": {"id": "foo", "limit": {"context": 111}}}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := metadataSource{Website: "models.dev", Provider: "openrouter"}
+	if entry, ok := cat.lookupSource(source, "vendor/foo"); !ok || entry.Context != 111 {
+		t.Fatalf("single prefix fallback: %+v ok=%v", entry, ok)
+	}
+	if entry, ok := cat.lookupSource(source, "vendor/nested/foo"); ok {
+		t.Fatalf("nested id must not degrade to bare match: %+v", entry)
 	}
 }
 
@@ -73,30 +91,5 @@ func TestDecodeUpstreamMaxTokens(t *testing.T) {
 	}
 	if byID["or/model"].MaxTokens != 8192 || byID["or/model"].Context != 200000 {
 		t.Fatalf("openrouter entry: %+v", byID["or/model"])
-	}
-}
-
-func TestApplyModelLimitsUpstreamWinsModelsdevFills(t *testing.T) {
-	byID := map[string]upstreamEntry{"glm-5.3": {ID: "glm-5.3", Context: 272000, MaxTokens: 128000}}
-	dev, _ := parseModelsdevCatalog([]byte(`{"zai-org":{"models":{"glm-5.3":{"id":"glm-5.3","limit":{"context":1048576,"output":131072}}}},
-	"openai":{"models":{"gpt-5.6":{"id":"gpt-5.6","limit":{"context":400000,"output":100000}}}}}`))
-	models := []ModelRef{{Name: "glm-5.3"}, {Name: "gpt-5.6"}, {Name: "unknown-model"}}
-
-	applyModelLimits(models, byID, dev, nil, true)
-
-	if models[0].MaxContextLength != 272000 || models[0].MaxOutputTokens != 128000 {
-		t.Fatalf("upstream ctx must win, got %d", models[0].MaxContextLength)
-	}
-	if models[1].MaxContextLength != 400000 || models[1].MaxOutputTokens != 100000 {
-		t.Fatalf("models.dev must fill gap, got %+v", models[1])
-	}
-	if models[2].MaxContextLength != 0 {
-		t.Fatalf("unknown model stays 0, got %d", models[2].MaxContextLength)
-	}
-
-	off := []ModelRef{{Name: "gpt-5.6"}}
-	applyModelLimits(off, byID, dev, nil, false)
-	if off[0].MaxContextLength != 0 || off[0].MaxOutputTokens != 0 {
-		t.Fatal("modelsdev disabled must not write ctx")
 	}
 }

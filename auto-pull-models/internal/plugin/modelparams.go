@@ -33,11 +33,13 @@ type modelparamsParam struct {
 	Group  string `json:"group"`
 	Type   string `json:"type"`
 	Values []any  `json:"values"`
+	Range  struct {
+		Max float64 `json:"max"`
+	} `json:"range"`
 }
 
 type modelparamsCatalog struct {
-	byKey   map[string]modelparamsEntry
-	byModel map[string][]modelparamsEntry
+	byKey map[string]modelparamsEntry
 }
 
 func (s *Service) fetchModelparamsCatalog(url string) (*modelparamsCatalog, error) {
@@ -70,10 +72,7 @@ func parseModelparamsCatalog(raw []byte) (*modelparamsCatalog, error) {
 	default:
 		return nil, fmt.Errorf("modelparams: unrecognized catalog")
 	}
-	cat := &modelparamsCatalog{
-		byKey:   map[string]modelparamsEntry{},
-		byModel: map[string][]modelparamsEntry{},
-	}
+	cat := &modelparamsCatalog{byKey: map[string]modelparamsEntry{}}
 	for _, e := range list {
 		e.Provider = strings.ToLower(strings.TrimSpace(e.Provider))
 		e.Model = strings.TrimSpace(e.Model)
@@ -86,8 +85,6 @@ func parseModelparamsCatalog(raw []byte) (*modelparamsCatalog, error) {
 		}
 		key := e.Provider + "/" + strings.ToLower(e.Model) + "/" + e.AuthType
 		cat.byKey[key] = e
-		mk := strings.ToLower(e.Model)
-		cat.byModel[mk] = append(cat.byModel[mk], e)
 	}
 	if len(cat.byKey) == 0 {
 		return nil, fmt.Errorf("modelparams: empty catalog")
@@ -95,165 +92,26 @@ func parseModelparamsCatalog(raw []byte) (*modelparamsCatalog, error) {
 	return cat, nil
 }
 
-func (c *modelparamsCatalog) levelsFor(id string) ([]string, bool) {
-	if c == nil {
-		return nil, false
+func (c *modelparamsCatalog) lookupSource(source metadataSource, id string) (modelparamsEntry, bool) {
+	if c == nil || source.Website != "modelparams.dev" {
+		return modelparamsEntry{}, false
 	}
-	entry, ok := c.lookup(id)
-	if !ok {
-		return nil, false
-	}
-	levels := extractThinkingLevels(entry.Params)
-	if len(levels) == 0 {
-		return nil, false
-	}
-	return levels, true
-}
-
-func (c *modelparamsCatalog) lookup(id string) (modelparamsEntry, bool) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return modelparamsEntry{}, false
 	}
-	provider, model, prefixed := splitProviderModel(id)
-	names := candidateModelNames(model)
-	preferSub := !prefixed
-	if prefixed {
-		for _, name := range names {
-			if e, ok := c.pick(provider, name, false); ok {
-				return e, true
-			}
-		}
-		return modelparamsEntry{}, false
+	lookup := func(model string) (modelparamsEntry, bool) {
+		key := source.Provider + "/" + strings.ToLower(model) + "/" + source.AuthType
+		entry, ok := c.byKey[key]
+		return entry, ok
 	}
-	guesses := guessProviders(model)
-	for _, name := range names {
-		for _, p := range guesses {
-			if e, ok := c.pick(p, name, preferSub); ok {
-				return e, true
-			}
-		}
-		if e, ok := c.pick("", name, preferSub); ok {
-			return e, true
-		}
+	if entry, ok := lookup(id); ok {
+		return entry, true
+	}
+	if strings.Count(id, "/") == 1 {
+		return lookup(id[strings.IndexByte(id, '/')+1:])
 	}
 	return modelparamsEntry{}, false
-}
-
-func (c *modelparamsCatalog) pick(provider, model string, preferSubscription bool) (modelparamsEntry, bool) {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if model == "" {
-		return modelparamsEntry{}, false
-	}
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider != "" {
-		first, second := "api_key", "subscription"
-		if preferSubscription {
-			first, second = "subscription", "api_key"
-		}
-		if e, ok := c.byKey[provider+"/"+model+"/"+first]; ok {
-			return e, true
-		}
-		if e, ok := c.byKey[provider+"/"+model+"/"+second]; ok {
-			return e, true
-		}
-		return modelparamsEntry{}, false
-	}
-	cands := c.byModel[model]
-	if len(cands) == 0 {
-		return modelparamsEntry{}, false
-	}
-	if len(cands) == 1 {
-		return cands[0], true
-	}
-	var sub, key, rest []modelparamsEntry
-	for _, e := range cands {
-		switch e.AuthType {
-		case "subscription":
-			sub = append(sub, e)
-		case "api_key":
-			key = append(key, e)
-		default:
-			rest = append(rest, e)
-		}
-	}
-	pool := key
-	if preferSubscription && len(sub) > 0 {
-		pool = sub
-	} else if !preferSubscription && len(key) > 0 {
-		pool = key
-	} else if len(sub) > 0 {
-		pool = sub
-	} else if len(rest) > 0 {
-		pool = rest
-	}
-	if len(pool) == 1 {
-		return pool[0], true
-	}
-	return modelparamsEntry{}, false
-}
-
-func splitProviderModel(id string) (provider, model string, prefixed bool) {
-	id = strings.TrimSpace(id)
-	if i := strings.Index(id, "/"); i > 0 {
-		return strings.ToLower(id[:i]), strings.TrimSpace(id[i+1:]), true
-	}
-	return "", id, false
-}
-
-func candidateModelNames(model string) []string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return
-		}
-		k := strings.ToLower(s)
-		if _, ok := seen[k]; ok {
-			return
-		}
-		seen[k] = struct{}{}
-		out = append(out, s)
-	}
-	add(model)
-	if i := strings.Index(model, ":"); i > 0 {
-		add(model[:i])
-	}
-	lower := strings.ToLower(model)
-	if strings.HasSuffix(lower, "-thinking") {
-		add(model[:len(model)-len("-thinking")])
-	}
-	if strings.HasSuffix(lower, "-preview") {
-		add(model[:len(model)-len("-preview")])
-	} else {
-		add(model + "-preview")
-	}
-	return out
-}
-
-func guessProviders(model string) []string {
-	m := strings.ToLower(model)
-	switch {
-	case strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4") || strings.HasPrefix(m, "codex"):
-		return []string{"openai"}
-	case strings.HasPrefix(m, "claude-"):
-		return []string{"anthropic"}
-	case strings.HasPrefix(m, "gemini-"):
-		return []string{"google"}
-	case strings.HasPrefix(m, "grok-"):
-		return []string{"xai"}
-	case strings.HasPrefix(m, "kimi-"):
-		return []string{"moonshot", "fireworks", "alibaba"}
-	case strings.HasPrefix(m, "deepseek-"):
-		return []string{"deepseek", "alibaba"}
-	default:
-		return nil
-	}
 }
 
 func extractThinkingLevels(params []modelparamsParam) []string {
@@ -275,6 +133,22 @@ func extractThinkingLevels(params []modelparamsParam) []string {
 		}
 	}
 	return nil
+}
+
+func extractMaxOutputTokens(params []modelparamsParam) int {
+	paths := []string{"max_output_tokens", "max_completion_tokens", "max_tokens", "generationConfig.maxOutputTokens", "inferenceConfig.maxTokens"}
+	byPath := map[string]modelparamsParam{}
+	for _, param := range params {
+		if param.Group == "generation_length" && param.Type == "integer" && param.Range.Max > 0 {
+			byPath[param.Path] = param
+		}
+	}
+	for _, path := range paths {
+		if param, ok := byPath[path]; ok {
+			return int(param.Range.Max)
+		}
+	}
+	return 0
 }
 
 func skipReasoningPath(path string) bool {
