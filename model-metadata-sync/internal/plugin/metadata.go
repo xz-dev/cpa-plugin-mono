@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -116,7 +115,7 @@ func sortedMetadataSources(seen map[string]metadataSource) []metadataSource {
 	return out
 }
 
-func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compiledProvider, modelparams *modelparamsCatalog, modelparamsErr error, modelsdev *modelsdevCatalog, modelsdevErr error) (reports []ModelMetadataResult, matched, missed int) {
+func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compiledChannel, modelparams *modelparamsCatalog, modelparamsErr error, modelsdev *modelsdevCatalog, modelsdevErr error) (reports []ModelMetadataResult, matched, missed int) {
 	reports = make([]ModelMetadataResult, 0, len(models))
 	thinkingRequested := spec.UpstreamMeta
 	hasModelsdevSource := false
@@ -140,6 +139,9 @@ func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compile
 				if !states[field].set {
 					addFieldAttempt(states, field, "upstream /models")
 				}
+			}
+			if spec.Kind == KindClaude && !states["max-input-tokens"].set {
+				addFieldAttempt(states, "max-input-tokens", "upstream /models")
 			}
 			applyUpstreamFields(&models[i], upstream, states)
 			thinkingEnriched = len(upstream.Efforts) > 0
@@ -283,6 +285,10 @@ func applyUpstreamFields(model *ModelRef, upstream upstreamEntry, states map[str
 		model.MaxContextLength = upstream.Context
 		setField(states, "max-context-length", upstream.Context, "upstream /models", "upstream", "supplied by enabled upstream metadata")
 	}
+	if model.MaxInputTokens == 0 && upstream.ClaudeMaxInput > 0 {
+		model.MaxInputTokens = upstream.ClaudeMaxInput
+		setField(states, "max-input-tokens", upstream.ClaudeMaxInput, "upstream /models", "upstream", "supplied by enabled upstream metadata")
+	}
 	if model.MaxOutputTokens == 0 && upstream.MaxTokens > 0 {
 		model.MaxOutputTokens = upstream.MaxTokens
 		setField(states, "max-output-tokens", upstream.MaxTokens, "upstream /models", "upstream", "supplied by enabled upstream metadata")
@@ -337,6 +343,14 @@ func applyOverridesWithProvenance(model *ModelRef, override ModelOverride, state
 		levels := append([]string(nil), override.ThinkingLevels...)
 		set("thinking.levels", levels, func() { model.Thinking = &ThinkingConfig{Levels: levels} })
 	}
+	if len(override.InputModalities) > 0 {
+		values := append([]string(nil), override.InputModalities...)
+		set("input-modalities", values, func() { model.InputModalities = values })
+	}
+	if len(override.OutputModalities) > 0 {
+		values := append([]string(nil), override.OutputModalities...)
+		set("output-modalities", values, func() { model.OutputModalities = values })
+	}
 }
 
 func setField(states map[string]*fieldState, field string, value any, source, status, reason string) {
@@ -370,7 +384,7 @@ func attemptedSourceErrors(tried []string, modelparamsErr, modelsdevErr error) [
 	return errors
 }
 
-func sourceErrors(spec compiledProvider, modelparamsErr, modelsdevErr error) []string {
+func sourceErrors(spec compiledChannel, modelparamsErr, modelsdevErr error) []string {
 	need := map[string]bool{}
 	for _, source := range spec.MetadataSources {
 		need[source.Website] = true
@@ -383,20 +397,4 @@ func sourceErrors(spec compiledProvider, modelparamsErr, modelsdevErr error) []s
 		errors = append(errors, modelsdevErr.Error())
 	}
 	return errors
-}
-
-func metadataSamples(reports []ModelMetadataResult) []string {
-	var samples []string
-	for _, report := range reports {
-		for _, field := range report.Fields {
-			if field.Field == "thinking.levels" && field.Status != "skipped" {
-				samples = append(samples, fmt.Sprintf("%s: %v", report.Model, field.Value))
-				break
-			}
-		}
-		if len(samples) == 12 {
-			break
-		}
-	}
-	return samples
 }

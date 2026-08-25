@@ -1,4 +1,4 @@
-module github.com/xz-dev/cpa-plugin-mono/auto-pull-models
+module github.com/xz-dev/cpa-plugin-mono/model-metadata-sync
 
 go 1.26.0
 

@@ -49,7 +49,7 @@ func (s *Service) fetchModelparamsCatalog(url string) (*modelparamsCatalog, erro
 	}
 	headers := http.Header{}
 	headers.Set("Accept", "application/json")
-	headers.Set("User-Agent", "auto-pull-models")
+	headers.Set("User-Agent", "model-metadata-sync")
 	status, body, err := s.transport.Do(http.MethodGet, url, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modelparams: %w", err)

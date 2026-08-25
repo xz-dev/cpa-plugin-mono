@@ -38,7 +38,7 @@ func (s *Service) fetchModelsdevCatalog(url string) (*modelsdevCatalog, error) {
 	}
 	headers := http.Header{}
 	headers.Set("Accept", "application/json")
-	headers.Set("User-Agent", "auto-pull-models")
+	headers.Set("User-Agent", "model-metadata-sync")
 	status, body, err := s.transport.Do(http.MethodGet, url, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modelsdev: %w", err)

@@ -71,7 +71,7 @@ func TestModelsdevSinglePrefixFallbackRejectsNestedCPAID(t *testing.T) {
 }
 
 func TestDecodeUpstreamMaxTokens(t *testing.T) {
-	entries, err := parseUpstreamCatalog([]byte(`{"models":[
+	entries, err := parseOpenAICatalog([]byte(`{"models":[
 		{"slug":"gpt-5.6-sol","context_window":272000,"max_tokens":128000},
 		{"slug":"glm-5.3","context_window":272000,"max_tokens":null},
 		{"id":"or/model","context_length":200000,"top_provider":{"max_completion_tokens":8192}}

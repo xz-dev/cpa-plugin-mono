@@ -1,34 +1,28 @@
 {
-  "interval": "1h",
+  "interval": "0",
   "management_base_url": "http://127.0.0.1:8317",
   "management_key_env": "",
   "management_key_file": "/CLIProxyAPI/mgmt.key",
   "keep_existing_aliases": true,
-  "providers": {
-    "openrouter": {
+  "channels": [
+    {
       "enabled": true,
-      "mode": "include",
-      "patterns": ["^openai/", "^anthropic/", "gpt-"],
-      "upstream_meta": true
+      "selector": {
+        "name": "元流",
+        "base_url": "https://api.axis.fan/v1"
+      },
+      "mode": "exclude",
+      "patterns": ["^text-embedding-", "^rerank-"]
     },
-    "ZCode": {
+    {
       "enabled": true,
+      "selector": {
+        "name": "ZCode",
+        "base_url": "http://zcode-proxy:8080/v1"
+      },
       "mode": "exclude",
       "patterns": [],
-      "codex_manifest": true,
-      "upstream_meta": true,
-      "metadata_sources": [
-        "modelparams.dev/z-ai/api_key",
-        "models.dev/nano-gpt"
-      ],
-      "overrides": {
-        "glm-5.3": {
-          "max_context_length": 262144,
-          "max_input_tokens": 240000,
-          "max_output_tokens": 22144,
-          "thinking_levels": ["low", "high", "max"]
-        }
-      }
+      "codex_manifest": true
     }
-  }
+  ]
 }

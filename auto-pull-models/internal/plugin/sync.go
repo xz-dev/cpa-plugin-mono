@@ -1,69 +1,68 @@
 package plugin
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-type ProviderResult struct {
-	Name             string                `json:"name"`
-	Enabled          bool                  `json:"enabled"`
-	Fetched          int                   `json:"fetched"`
-	Kept             int                   `json:"kept"`
-	Dropped          int                   `json:"dropped"`
-	Written          int                   `json:"written"`
-	Current          int                   `json:"current"`
-	Skipped          bool                  `json:"skipped,omitempty"`
-	Unchanged        bool                  `json:"unchanged,omitempty"`
-	DryRun           bool                  `json:"dry_run,omitempty"`
-	KeptSamples      []string              `json:"kept_samples,omitempty"`
-	DroppedSamples   []string              `json:"dropped_samples,omitempty"`
-	ThinkingMatched  int                   `json:"thinking_matched,omitempty"`
-	ThinkingMissed   int                   `json:"thinking_missed,omitempty"`
-	ThinkingSamples  []string              `json:"thinking_samples,omitempty"`
-	Metadata         []ModelMetadataResult `json:"metadata,omitempty"`
-	ModelparamsError string                `json:"modelparams_error,omitempty"`
-	CatalogErrors    []string              `json:"catalog_errors,omitempty"`
-	Error            string                `json:"error,omitempty"`
+type ChannelResult struct {
+	Kind           string          `json:"kind"`
+	Selector       ChannelSelector `json:"selector"`
+	Enabled        bool            `json:"enabled"`
+	Fetched        int             `json:"fetched"`
+	Kept           int             `json:"kept"`
+	Dropped        int             `json:"dropped"`
+	Current        int             `json:"current"`
+	Desired        int             `json:"desired"`
+	Skipped        bool            `json:"skipped,omitempty"`
+	Unchanged      bool            `json:"unchanged,omitempty"`
+	DryRun         bool            `json:"dry_run,omitempty"`
+	KeptSamples    []string        `json:"kept_samples,omitempty"`
+	DroppedSamples []string        `json:"dropped_samples,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
 
 type SyncReport struct {
-	At        time.Time        `json:"at"`
-	OK        bool             `json:"ok"`
-	DryRun    bool             `json:"dry_run,omitempty"`
-	Providers []ProviderResult `json:"providers"`
-	Error     string           `json:"error,omitempty"`
+	At       time.Time       `json:"at"`
+	OK       bool            `json:"ok"`
+	DryRun   bool            `json:"dry_run,omitempty"`
+	Channels []ChannelResult `json:"channels"`
+	Error    string          `json:"error,omitempty"`
 }
 
-type CompatSummary struct {
-	Name       string `json:"name"`
-	BaseURL    string `json:"base_url"`
-	Disabled   bool   `json:"disabled"`
-	ModelCount int    `json:"model_count"`
+type ChannelSummary struct {
+	Kind       string          `json:"kind"`
+	Selector   ChannelSelector `json:"selector"`
+	Disabled   bool            `json:"disabled"`
+	Ready      bool            `json:"ready"`
+	ModelCount int             `json:"model_count"`
 }
 
-func (s *Service) ListCompatSummaries(key string) ([]CompatSummary, error) {
-	list, err := s.listCompat(key)
+func (s *Service) ListChannelSummaries(key string) ([]ChannelSummary, error) {
+	list, err := s.listModelChannels(key)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]CompatSummary, 0, len(list))
-	for _, p := range list {
-		out = append(out, CompatSummary{
-			Name:       p.Name,
-			BaseURL:    p.BaseURL,
-			Disabled:   p.Disabled,
-			ModelCount: len(p.Models),
+	out := make([]ChannelSummary, 0, len(list))
+	for _, channel := range list {
+		if channel.Kind != "openai-compatibility" {
+			continue
+		}
+		selector, err := normalizeOpenAISelector(channel.Selector)
+		if err != nil {
+			continue
+		}
+		out = append(out, ChannelSummary{
+			Kind: channel.Kind, Selector: selector, Disabled: channel.Disabled, Ready: channel.Ready, ModelCount: len(channel.Models),
 		})
 	}
 	return out, nil
 }
 
-func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeConfig) SyncReport {
+func (s *Service) run(key, only string, dryRun bool, override *runtimeConfig) SyncReport {
 	report := SyncReport{At: time.Now().UTC(), OK: true, DryRun: dryRun}
-	cfg := s.cfg
+	cfg := s.Current()
 	if override != nil {
 		cfg = *override
 	}
@@ -72,196 +71,91 @@ func (s *Service) run(key, onlyProvider string, dryRun bool, override *runtimeCo
 		report.Error = "management key is required"
 		return report
 	}
-	var catalog *modelparamsCatalog
-	var catalogErr error
-	needCatalog := false
-	var devCatalog *modelsdevCatalog
-	var devErr error
-	needDev := false
-	for _, spec := range cfg.Providers {
-		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
-			continue
-		}
-		if !spec.Enabled {
-			continue
-		}
-		for _, source := range spec.MetadataSources {
-			if source.Website == "modelparams.dev" {
-				needCatalog = true
-			}
-			if source.Website == "models.dev" {
-				needDev = true
-			}
-		}
-	}
-	if needDev {
-		devCatalog, devErr = s.fetchModelsdevCatalog(cfg.ModelsdevURL)
-	}
-	if needCatalog {
-		catalog, catalogErr = s.fetchModelparamsCatalog(cfg.ModelparamsURL)
-	}
-	list, err := s.listCompat(key)
+	channels, err := s.listModelChannels(key)
 	if err != nil {
 		report.OK = false
 		report.Error = err.Error()
 		return report
 	}
-	indexByName := map[string]int{}
-	for i, p := range list {
-		indexByName[strings.TrimSpace(p.Name)] = i
-	}
-	pendingWrites := map[string][]ModelRef{}
-	fileMode := cfg.WriteMode == WriteModeFile
-	fileModels := map[string][]ModelRef{}
-	if fileMode {
-		fileModels, err = readModelsFile(cfg.ConfigPath)
-		if err != nil {
-			report.OK = false
-			report.Error = "file read: " + err.Error()
-			return report
-		}
-	}
-
-	for _, spec := range cfg.Providers {
-		if onlyProvider != "" && !strings.EqualFold(spec.Name, onlyProvider) {
+	for _, spec := range cfg.Channels {
+		channelKey := selectorKey("openai-compatibility", spec.Selector)
+		if only != "" && only != channelKey && !strings.EqualFold(only, spec.Selector.Name) {
 			continue
 		}
-		res := ProviderResult{Name: spec.Name, Enabled: spec.Enabled, DryRun: dryRun}
+		result := ChannelResult{Kind: "openai-compatibility", Selector: spec.Selector, Enabled: spec.Enabled, DryRun: dryRun}
 		if !spec.Enabled {
-			res.Skipped = true
-			report.Providers = append(report.Providers, res)
+			result.Skipped = true
+			report.Channels = append(report.Channels, result)
 			continue
 		}
-		idx, ok := indexByName[spec.Name]
-		if !ok {
-			res.Error = "CPA 里没有这个 openai-compatibility provider，请先在 AI Providers 添加"
-			report.OK = false
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		host := list[idx]
-		currentModels := host.Models
-		if fileMode {
-			var found bool
-			currentModels, found = fileModels[spec.Name]
-			if !found {
-				res.Error = "config.yaml 里没有这个 openai-compatibility provider"
-				report.OK = false
-				report.Providers = append(report.Providers, res)
-				continue
-			}
-		}
-		res.Current = len(currentModels)
-		if host.Disabled {
-			res.Skipped = true
-			res.Error = "provider 已在 CPA 禁用"
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		url := modelsURL(host.BaseURL, spec.CodexManifest)
-		if url == "" {
-			res.Error = "provider 没有 base-url"
-			report.OK = false
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		entries, err := s.fetchUpstreamCatalog(key, firstAuthIndex(host.APIKeyEntries), url)
+		channel, err := matchOpenAIChannel(channels, spec.Selector)
 		if err != nil {
-			res.Error = err.Error()
+			result.Error = err.Error()
 			report.OK = false
-			report.Providers = append(report.Providers, res)
+			report.Channels = append(report.Channels, result)
+			continue
+		}
+		result.Current = len(channel.Models)
+		if channel.Disabled || !channel.Ready {
+			result.Error = "channel is disabled or not ready"
+			result.Skipped = true
+			report.OK = false
+			report.Channels = append(report.Channels, result)
+			continue
+		}
+		entries, err := s.fetchOpenAICatalog(key, channel, spec.CodexManifest)
+		if err != nil {
+			result.Error = err.Error()
+			report.OK = false
+			report.Channels = append(report.Channels, result)
 			continue
 		}
 		ids := make([]string, 0, len(entries))
-		byID := map[string]upstreamEntry{}
-		for _, e := range entries {
-			ids = append(ids, e.ID)
-			byID[e.ID] = e
+		for _, entry := range entries {
+			ids = append(ids, entry.ID)
 		}
-		res.Fetched = len(ids)
+		result.Fetched = len(ids)
 		kept := filterIDs(ids, spec)
-		dropped := difference(ids, kept)
-		res.Kept = len(kept)
-		res.Dropped = len(dropped)
-		res.KeptSamples = sample(kept, 40)
-		res.DroppedSamples = sample(dropped, 40)
-		merged := mergeModels(currentModels, kept, cfg.KeepExistingAliases)
-		res.Metadata, res.ThinkingMatched, res.ThinkingMissed = enrichModels(merged, byID, spec, catalog, catalogErr, devCatalog, devErr)
-		res.ThinkingSamples = metadataSamples(res.Metadata)
-		res.CatalogErrors = sourceErrors(spec, catalogErr, devErr)
-		if catalogErr != nil {
-			for _, source := range spec.MetadataSources {
-				if source.Website == "modelparams.dev" {
-					res.ModelparamsError = catalogErr.Error()
-					break
-				}
+		result.Kept = len(kept)
+		result.Dropped = len(ids) - len(kept)
+		result.Desired = len(kept)
+		result.KeptSamples = sample(kept, 40)
+		result.DroppedSamples = sample(difference(ids, kept), 40)
+		if sameStrings(modelNames(channel.Models), kept) {
+			result.Unchanged = true
+			report.Channels = append(report.Channels, result)
+			continue
+		}
+		if !dryRun {
+			if err := s.reconcileMembership(key, channel, kept, cfg.KeepExistingAliases); err != nil {
+				result.Error = err.Error()
+				report.OK = false
 			}
 		}
-		res.Written = len(merged)
-		if modelsEqual(currentModels, merged) {
-			res.Unchanged = true
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		if dryRun {
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		if fileMode {
-			pendingWrites[spec.Name] = merged
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		if err := s.patchCompatModels(key, idx, merged); err != nil {
-			res.Error = err.Error()
-			report.OK = false
-			report.Providers = append(report.Providers, res)
-			continue
-		}
-		report.Providers = append(report.Providers, res)
+		report.Channels = append(report.Channels, result)
 	}
-	if !dryRun && len(pendingWrites) > 0 {
-		if err := writeModelsFile(cfg.ConfigPath, pendingWrites); err != nil {
-			report.OK = false
-			report.Error = "file write: " + err.Error()
-		}
-	}
-	if onlyProvider != "" && len(report.Providers) == 0 {
+	if only != "" && len(report.Channels) == 0 {
 		report.OK = false
-		report.Error = fmt.Sprintf("规则里没有 provider %q，请先勾选添加", onlyProvider)
+		report.Error = fmt.Sprintf("configured channel %q not found", only)
 	}
 	return report
 }
 
-func (s *Service) Sync(key, onlyProvider string) SyncReport {
-	return s.run(key, onlyProvider, false, nil)
+func (s *Service) Sync(key, only string) SyncReport { return s.run(key, only, false, nil) }
+func (s *Service) Preview(key, only string, override *runtimeConfig) SyncReport {
+	return s.run(key, only, true, override)
 }
 
-func (s *Service) Preview(key, onlyProvider string, override *runtimeConfig) SyncReport {
-	return s.run(key, onlyProvider, true, override)
-}
-
-func modelsEqual(a, b []ModelRef) bool {
-	aSet := modelSet(a)
-	bSet := modelSet(b)
-	if len(aSet) != len(bSet) {
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	for model := range aSet {
-		if _, ok := bSet[model]; !ok {
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}
 	return true
-}
-
-func modelSet(models []ModelRef) map[string]struct{} {
-	set := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		raw, _ := json.Marshal(model)
-		set[string(raw)] = struct{}{}
-	}
-	return set
 }
 
 func difference(all, kept []string) []string {

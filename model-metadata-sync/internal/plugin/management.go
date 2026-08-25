@@ -14,16 +14,18 @@ import (
 var uiHTML []byte
 
 func (s *Service) ManagementRoutes() pluginapi.ManagementRegistrationResponse {
+	base := "/v0/management/plugins/model-metadata-sync/"
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/status", Description: "Last membership sync report"},
-			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/json", Description: "Read membership sync config"},
-			{Method: http.MethodPut, Path: "/v0/management/plugins/auto-pull-models/json", Description: "Write membership sync config"},
-			{Method: http.MethodGet, Path: "/v0/management/plugins/auto-pull-models/channels", Description: "List sanitized OpenAI-compatible channels"},
-			{Method: http.MethodPost, Path: "/v0/management/plugins/auto-pull-models/preview", Description: "Preview membership changes"},
-			{Method: http.MethodPost, Path: "/v0/management/plugins/auto-pull-models/sync", Description: "Run membership sync"},
+			{Method: http.MethodGet, Path: base + "status", Description: "Last metadata sync report"},
+			{Method: http.MethodGet, Path: base + "json", Description: "Read metadata sync config"},
+			{Method: http.MethodPut, Path: base + "json", Description: "Write metadata sync config"},
+			{Method: http.MethodGet, Path: base + "channels", Description: "List sanitized model channels"},
+			{Method: http.MethodGet, Path: base + "metadata-sources", Description: "List external metadata source identities"},
+			{Method: http.MethodPost, Path: base + "preview", Description: "Preview metadata patches"},
+			{Method: http.MethodPost, Path: base + "sync", Description: "Run metadata sync"},
 		},
-		Resources: []pluginapi.ResourceRoute{{Path: "/index.html", Menu: "Auto Pull Models", Description: "Filter and reconcile OpenAI-compatible model membership"}},
+		Resources: []pluginapi.ResourceRoute{{Path: "/index.html", Menu: "Model Metadata Sync", Description: "Enrich existing channel models without changing membership"}},
 	}
 }
 
@@ -46,6 +48,8 @@ func (s *Service) HandleManagement(req pluginapi.ManagementRequest) pluginapi.Ma
 			return jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		}
 		return jsonResponse(http.StatusOK, map[string]any{"channels": channels})
+	case req.Method == http.MethodGet && strings.HasSuffix(path, "/metadata-sources"):
+		return jsonResponse(http.StatusOK, s.ListMetadataSources())
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/json"):
 		return s.readConfigResponse()
 	case req.Method == http.MethodPut && strings.HasSuffix(path, "/json"):
@@ -78,19 +82,14 @@ func reportStatus(ok bool) int {
 	}
 	return http.StatusBadGateway
 }
-
 func (s *Service) statusPayload() map[string]any {
 	cfg := s.Current()
-	selectors := make([]ChannelSelector, 0, len(cfg.Channels))
+	selectors := []map[string]any{}
 	for _, channel := range cfg.Channels {
-		selectors = append(selectors, channel.Selector)
+		selectors = append(selectors, map[string]any{"kind": channel.Kind, "selector": channel.Selector})
 	}
-	return map[string]any{
-		"config_file": s.JSONPath(), "interval": cfg.Raw.Interval, "channels": selectors,
-		"has_key": resolveManagementKey(cfg) != "", "last": s.Last(),
-	}
+	return map[string]any{"config_file": s.JSONPath(), "interval": cfg.Raw.Interval, "channels": selectors, "has_key": resolveManagementKey(cfg) != "", "last": s.Last()}
 }
-
 func (s *Service) readConfigResponse() pluginapi.ManagementResponse {
 	raw, err := os.ReadFile(s.JSONPath())
 	if err != nil {
@@ -102,16 +101,13 @@ func (s *Service) readConfigResponse() pluginapi.ManagementResponse {
 	}
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: raw}
 }
-
 func (s *Service) uiResponse() pluginapi.ManagementResponse {
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}, Body: uiHTML}
 }
-
 func jsonResponse(status int, value any) pluginapi.ManagementResponse {
 	raw, _ := json.Marshal(value)
 	return pluginapi.ManagementResponse{StatusCode: status, Headers: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: raw}
 }
-
 func bearerKey(headers http.Header) string {
 	value := strings.TrimSpace(headers.Get("Authorization"))
 	if len(value) >= 7 && strings.EqualFold(value[:7], "bearer ") {
