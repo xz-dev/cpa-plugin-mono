@@ -50,17 +50,25 @@ func TestBlockedAdmissionAndBlockClearAreRaceFree(t *testing.T) {
 	defer s.Shutdown()
 	for i := 0; i < 20_000; i++ {
 		s.blockForTest(CodePlannerStalled)
+		var runID string
+		var code ErrorCode
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, _, _ = s.enqueue(OperationAutoPull)
+			runID, _, code = s.enqueue(OperationAutoPull)
 		}()
 		go func() {
 			defer wg.Done()
 			s.ClearBlockForReconcileProof()
 		}()
 		wg.Wait()
+		if runID == "" || (code != "" && code != CodePlannerStalled) {
+			t.Fatalf("invalid admission outcome: run_id=%q code=%q", runID, code)
+		}
+		if s.Status().WriterBlocked {
+			t.Fatal("completed clear left Writer blocked")
+		}
 	}
 }
 
@@ -396,6 +404,33 @@ func TestSchedulerAdmitsRetainedExpiredDeadlinesOnceAfterUnblock(t *testing.T) {
 	waitForState(t, s, metadataID, StateFailed)
 }
 
+type reportingExecutor struct{}
+
+func (*reportingExecutor) Execute(context.Context, Operation, Settings) Outcome {
+	return Outcome{State: StateFailed, Code: CodeNotImplemented}
+}
+
+func (*reportingExecutor) ExecuteWithProgress(_ context.Context, _ Operation, _ Settings, progress func(int, RunState)) Outcome {
+	progress(2, StateCommitting)
+	progress(2, StateWaiting)
+	return Outcome{State: StateSucceeded, Version: configVersion([]byte("done")), Changed: true}
+}
+
+func TestServicePublishesExecutorAttemptAndPhaseProgress(t *testing.T) {
+	setValidSecrets(t)
+	s := New(&reportingExecutor{})
+	defer s.Shutdown()
+	if err := s.Configure(validConfigYAML()); err != nil {
+		t.Fatal(err)
+	}
+	s.ClearBlockForReconcileProof()
+	id := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil)))
+	got := waitForState(t, s, id, StateSucceeded)
+	if got.Attempt != 2 || got.Version != configVersion([]byte("done")) || !got.Changed {
+		t.Fatalf("status=%+v", got)
+	}
+}
+
 func TestTypedFoundationExecutorOutcome(t *testing.T) {
 	setValidSecrets(t)
 	s := New(nil)
@@ -408,6 +443,83 @@ func TestTypedFoundationExecutorOutcome(t *testing.T) {
 	got := waitForState(t, s, id, StateFailed)
 	if got.ErrorCode != CodeNotImplemented {
 		t.Fatalf("status=%+v", got)
+	}
+}
+
+func TestNewServicePreservesCommitIdentityAcrossConfigure(t *testing.T) {
+	setValidSecrets(t)
+	s := NewService()
+	defer s.Shutdown()
+	if err := s.Configure(validConfigYAML()); err != nil {
+		t.Fatal(err)
+	}
+	first := s.executor.(*WriterExecutor).engine
+	instance := s.Status().InstanceID
+	if err := s.Configure([]byte(replaceLine(string(validConfigYAML()), "sync_epoch: epoch-a", "sync_epoch: epoch-b"))); err != nil {
+		t.Fatal(err)
+	}
+	if s.executor.(*WriterExecutor).engine != first || s.Status().InstanceID != instance {
+		t.Fatal("Configure replaced process-local commit identity")
+	}
+}
+
+func TestUncertainOutcomeBlocksLaterWritesUntilReconcile(t *testing.T) {
+	setValidSecrets(t)
+	executor := ExecutorFunc(func(context.Context, Operation, Settings) Outcome {
+		return Outcome{State: StateUncertain, Code: CodePersistedRuntimeUncertain, Version: configVersion([]byte("persisted")), Block: BlockRecord{Version: configVersion([]byte("persisted"))}}
+	})
+	s := New(executor)
+	defer s.Shutdown()
+	if err := s.Configure(validConfigYAML()); err != nil {
+		t.Fatal(err)
+	}
+	s.ClearBlockForReconcileProof()
+	id := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil)))
+	waitForState(t, s, id, StateUncertain)
+	blocked := s.HandleManagement(managementRequest(http.MethodPost, runMetadataPath, nil))
+	if blocked.StatusCode != http.StatusConflict || !s.Status().WriterBlocked {
+		t.Fatalf("blocked=%d %s status=%+v", blocked.StatusCode, blocked.Body, s.Status())
+	}
+}
+
+type successfulUncertaintyReconciler struct{}
+
+func (*successfulUncertaintyReconciler) Execute(context.Context, Operation, Settings) Outcome {
+	version := configVersion([]byte("uncertain"))
+	return Outcome{State: StateUncertain, Code: CodeCommitVerificationFailed, Version: version, Changed: true, Block: BlockRecord{Version: version}}
+}
+
+func (*successfulUncertaintyReconciler) ReconcileAndClear(_ context.Context, block BlockRecord, _ Settings, clear func(BlockRecord, string) bool) ReconcileResult {
+	if !clear(block, block.Version) {
+		return ReconcileResult{Code: CodeReconcileFailed}
+	}
+	return ReconcileResult{Cleared: true, Version: block.Version}
+}
+
+func TestSuccessfulReconcileRetainsFormerBlockingRun(t *testing.T) {
+	setValidSecrets(t)
+	s := New(&successfulUncertaintyReconciler{})
+	defer s.Shutdown()
+	if err := s.Configure(validConfigYAML()); err != nil {
+		t.Fatal(err)
+	}
+	s.ClearBlockForReconcileProof()
+	blockedRun := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil)))
+	waitForState(t, s, blockedRun, StateUncertain)
+	reconcileRun := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, reconcilePath, nil)))
+	waitForState(t, s, reconcileRun, StateSucceeded)
+	if got := s.statusByID(blockedRun); got == nil || got.State != StateUncertain {
+		t.Fatalf("former blocker was not retained: %+v", got)
+	}
+	summary := s.statusWithRuns()
+	found := false
+	for _, status := range summary.Runs {
+		if status.RunID == blockedRun {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("former blocker missing from latest operation summary: %+v", summary.Runs)
 	}
 }
 

@@ -10,6 +10,10 @@ type Executor interface {
 	Execute(context.Context, Operation, Settings) Outcome
 }
 
+type ProgressExecutor interface {
+	ExecuteWithProgress(context.Context, Operation, Settings, func(int, RunState)) Outcome
+}
+
 type ExecutorFunc func(context.Context, Operation, Settings) Outcome
 
 func (f ExecutorFunc) Execute(ctx context.Context, op Operation, settings Settings) Outcome {
@@ -19,6 +23,9 @@ func (f ExecutorFunc) Execute(ctx context.Context, op Operation, settings Settin
 type Option func(*Service)
 
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+func withAutomaticStartupReconcile() Option {
+	return func(s *Service) { s.automaticStartupReconcile = true }
+}
 
 type job struct {
 	runID     string
@@ -27,27 +34,50 @@ type job struct {
 }
 
 type Service struct {
-	mu             sync.Mutex
-	queueCond      *sync.Cond
-	settings       Settings
-	configured     bool
-	instanceID     string
-	reconfigureSeq uint64
-	executor       Executor
-	now            func() time.Time
-	queue          []job
-	ctx            context.Context
-	cancel         context.CancelFunc
-	stop           chan struct{}
-	done           chan struct{}
-	schedulerDone  chan struct{}
-	shutdownOnce   sync.Once
-	statuses       map[string]*RunStatus
-	activeByOp     map[Operation]string
-	completed      []string
-	blocker        *RunStatus
-	deadlines      map[Operation]time.Time
-	wakeScheduler  chan struct{}
+	mu                        sync.Mutex
+	queueCond                 *sync.Cond
+	settings                  Settings
+	configured                bool
+	instanceID                string
+	reconfigureSeq            uint64
+	executor                  Executor
+	now                       func() time.Time
+	queue                     []job
+	ctx                       context.Context
+	cancel                    context.CancelFunc
+	stop                      chan struct{}
+	done                      chan struct{}
+	schedulerDone             chan struct{}
+	shutdownOnce              sync.Once
+	statuses                  map[string]*RunStatus
+	activeByOp                map[Operation]string
+	completed                 []string
+	blocker                   *RunStatus
+	blockRecord               BlockRecord
+	deadlines                 map[Operation]time.Time
+	wakeScheduler             chan struct{}
+	automaticStartupReconcile bool
+}
+
+func NewService(options ...Option) *Service {
+	var service *Service
+	client := NewLoopbackClient()
+	settings := func() Settings {
+		if service == nil {
+			return Settings{}
+		}
+		return service.SettingsSnapshot()
+	}
+	localStatus := func() WorkerStatus {
+		if service == nil {
+			return WorkerStatus{}
+		}
+		return service.WorkerStatus()
+	}
+	workers := NewWorkerStatusClient(client)
+	engine := NewCommitEngine(client, workers, settings, localStatus)
+	service = New(NewWriterExecutor(NewHTTPPlanner(client), engine), append(options, withAutomaticStartupReconcile())...)
+	return service
 }
 
 func New(executor Executor, options ...Option) *Service {
@@ -72,6 +102,7 @@ func New(executor Executor, options ...Option) *Service {
 		option(s)
 	}
 	s.blocker = &RunStatus{RunID: mustNewOpaqueID(), Operation: OperationReconcile, State: StateBlocked, ErrorCode: CodeStartupReconcileRequired, QueuedAt: s.now(), InstanceID: instanceID}
+	s.blockRecord = BlockRecord{ID: s.blocker.RunID, Code: CodeStartupReconcileRequired, Restarted: true, EvidenceCaptured: s.now()}
 	s.statuses[s.blocker.RunID] = s.blocker
 	go s.worker()
 	go s.scheduler()
@@ -91,6 +122,10 @@ func (s *Service) Configure(configYAML []byte) error {
 	if err != nil {
 		return err
 	}
+	return s.configureSettings(next)
+}
+
+func (s *Service) configureSettings(next Settings) error {
 	now := s.now()
 	s.mu.Lock()
 	previous := s.settings
@@ -104,6 +139,9 @@ func (s *Service) Configure(configYAML []byte) error {
 	s.refreshStatusIdentityLocked()
 	s.mu.Unlock()
 	s.wake()
+	if !wasConfigured && s.automaticStartupReconcile {
+		_, _, _ = s.enqueue(OperationReconcile)
+	}
 	return nil
 }
 
@@ -117,20 +155,25 @@ func (s *Service) updateDeadlineLocked(op Operation, old, next time.Duration, ex
 	}
 }
 
+func (s *Service) SettingsSnapshot() Settings { return s.settingsSnapshot() }
+
+func (s *Service) WorkerStatus() WorkerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WorkerStatus{InstanceID: s.instanceID, ReconfigureSeq: s.reconfigureSeq, ConfigSHA256: s.settings.ConfigSHA256}
+}
+
 func (s *Service) settingsSnapshot() Settings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.settings
 }
 
-// ClearBlockForReconcileProof is the foundation seam used by a later reconcile executor
-// after it proves the plan's live-instance/hash predicates.
+// ClearBlockForReconcileProof is retained for foundation tests. Runtime reconcile
+// uses matching blocker/version evidence in finishReconcile.
 func (s *Service) ClearBlockForReconcileProof() {
 	s.mu.Lock()
-	if s.blocker != nil {
-		delete(s.statuses, s.blocker.RunID)
-	}
-	s.blocker = nil
+	s.clearBlockLocked(false)
 	s.mu.Unlock()
 	s.wake()
 }
@@ -208,7 +251,36 @@ func (s *Service) worker() {
 				status.State = StatePlanning
 			}
 		})
-		outcome := s.executor.Execute(s.ctx, item.operation, item.settings)
+		var outcome Outcome
+		if item.operation == OperationReconcile {
+			s.mu.Lock()
+			block := s.blockRecord
+			s.mu.Unlock()
+			if executor, ok := s.executor.(AtomicReconcileExecutor); ok {
+				result := executor.ReconcileAndClear(s.ctx, block, item.settings, s.clearMatchingBlock)
+				s.finishAtomicReconcile(item, result)
+				continue
+			}
+			if executor, ok := s.executor.(ReconcileExecutor); ok {
+				result := executor.Reconcile(s.ctx, block, item.settings)
+				s.finishReconcile(item, block, result)
+				continue
+			}
+		}
+		if executor, ok := s.executor.(ProgressExecutor); ok {
+			outcome = executor.ExecuteWithProgress(s.ctx, item.operation, item.settings, func(attempt int, state RunState) {
+				s.updateRun(item.runID, func(status *RunStatus) {
+					if attempt > 0 {
+						status.Attempt = attempt
+					}
+					if state != "" {
+						status.State = state
+					}
+				})
+			})
+		} else {
+			outcome = s.executor.Execute(s.ctx, item.operation, item.settings)
+		}
 		s.finish(item, outcome)
 	}
 }
@@ -220,6 +292,69 @@ func (s *Service) isStoppedLocked() bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) clearMatchingBlock(expected BlockRecord, version string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.blocker == nil || s.blockRecord.ID != expected.ID || s.blockRecord.Code != expected.Code || s.blockRecord.Version != expected.Version || (expected.Version != "" && version != expected.Version) {
+		return false
+	}
+	s.clearBlockLocked(true)
+	return true
+}
+
+func (s *Service) clearBlockLocked(retainUncertain bool) {
+	blocked := s.blocker
+	s.blocker = nil
+	s.blockRecord = BlockRecord{}
+	if blocked == nil {
+		return
+	}
+	if retainUncertain && blocked.State == StateUncertain {
+		s.retainCompletedLocked(blocked)
+		return
+	}
+	delete(s.statuses, blocked.RunID)
+}
+
+func (s *Service) finishAtomicReconcile(item job, result ReconcileResult) {
+	s.mu.Lock()
+	status := s.statuses[item.runID]
+	if status != nil {
+		if result.Cleared {
+			status.State, status.ErrorCode, status.Version = StateSucceeded, "", result.Version
+		} else {
+			status.State, status.ErrorCode = StateFailed, CodeReconcileFailed
+		}
+		status.FinishedAt = s.now()
+		delete(s.activeByOp, item.operation)
+		s.retainCompletedLocked(status)
+	}
+	s.mu.Unlock()
+	if result.Cleared {
+		s.wake()
+	}
+}
+
+func (s *Service) finishReconcile(item job, expected BlockRecord, result ReconcileResult) {
+	s.mu.Lock()
+	status := s.statuses[item.runID]
+	if status == nil {
+		s.mu.Unlock()
+		return
+	}
+	if !result.Cleared || s.blocker == nil || s.blockRecord.ID != expected.ID || s.blockRecord.Code != expected.Code || s.blockRecord.Version != expected.Version || (expected.Version != "" && result.Version != expected.Version) {
+		status.State, status.ErrorCode = StateFailed, CodeReconcileFailed
+	} else {
+		s.clearBlockLocked(true)
+		status.State, status.ErrorCode, status.Version = StateSucceeded, "", result.Version
+	}
+	status.FinishedAt = s.now()
+	delete(s.activeByOp, item.operation)
+	s.retainCompletedLocked(status)
+	s.mu.Unlock()
+	s.wake()
 }
 
 func (s *Service) finish(item job, outcome Outcome) {
@@ -237,6 +372,15 @@ func (s *Service) finish(item job, outcome Outcome) {
 		status.State = StateSucceeded
 	}
 	status.ErrorCode, status.Version, status.Changed = outcome.Code, outcome.Version, outcome.Changed
+	if outcome.Code == CodePlannerStalled || outcome.Code == CodePersistedRuntimeUncertain || outcome.Code == CodeCommitVerificationFailed {
+		status.State = StateUncertain
+		s.blocker = status
+		s.blockRecord = outcome.Block
+		s.blockRecord.ID, s.blockRecord.Code = status.RunID, outcome.Code
+		if s.blockRecord.EvidenceCaptured.IsZero() {
+			s.blockRecord.EvidenceCaptured = s.now()
+		}
+	}
 	if outcome.ConfigSHA256 != "" {
 		status.ConfigSHA256 = outcome.ConfigSHA256
 	}
@@ -256,6 +400,11 @@ func (s *Service) updateRun(id string, update func(*RunStatus)) {
 func (s *Service) retainCompletedLocked(status *RunStatus) {
 	if s.blocker != nil && status.RunID == s.blocker.RunID {
 		return
+	}
+	for _, id := range s.completed {
+		if id == status.RunID {
+			return
+		}
 	}
 	s.completed = append(s.completed, status.RunID)
 	for len(s.completed) > 32 {

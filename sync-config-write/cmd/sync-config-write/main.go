@@ -37,21 +37,17 @@ extern void cliproxyPluginShutdown(void);
 import "C"
 
 import (
-	"context"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/xz-dev/cpa-plugin-mono/sync-config-write/internal/plugin"
 )
 
+var pluginVersion = "0.1.0"
+
 func main() {}
 
-var (
-	pluginVersion = "0.1.0"
-	pluginService = plugin.New(plugin.ExecutorFunc(func(context.Context, plugin.Operation, plugin.Settings) plugin.Outcome {
-		return plugin.Outcome{State: plugin.StateFailed, Code: plugin.CodeNotImplemented}
-	}))
-)
+var pluginService = plugin.NewService()
 
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, pluginAPI *C.cliproxy_plugin_api) C.int {

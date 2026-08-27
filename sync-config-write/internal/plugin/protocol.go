@@ -33,10 +33,17 @@ const (
 type ErrorCode string
 
 const (
-	CodeNotImplemented           ErrorCode = "not_yet_implemented"
-	CodeWriterBlocked            ErrorCode = "writer_blocked"
-	CodeStartupReconcileRequired ErrorCode = "startup_reconcile_required"
-	CodePlannerStalled           ErrorCode = "planner_stalled"
+	CodeNotImplemented            ErrorCode = "not_yet_implemented"
+	CodeInvalidRequest            ErrorCode = "invalid_request"
+	CodeVersionConflict           ErrorCode = "version_conflict"
+	CodeCommitVerificationFailed  ErrorCode = "commit_verification_failed"
+	CodePersistedRuntimeUncertain ErrorCode = "persisted_runtime_uncertain"
+	CodeInvalidConfig             ErrorCode = "invalid_config"
+	CodeCoreUnavailable           ErrorCode = "core_unavailable"
+	CodeWriterBlocked             ErrorCode = "writer_blocked"
+	CodeStartupReconcileRequired  ErrorCode = "startup_reconcile_required"
+	CodePlannerStalled            ErrorCode = "planner_stalled"
+	CodeReconcileFailed           ErrorCode = "reconcile_failed"
 )
 
 type Outcome struct {
@@ -45,6 +52,7 @@ type Outcome struct {
 	Version      string
 	ConfigSHA256 string
 	Changed      bool
+	Block        BlockRecord
 }
 
 type RunStatus struct {

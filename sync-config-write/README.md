@@ -1,16 +1,18 @@
 # sync-config-write
 
-Foundation native CPA plugin for serialized configuration orchestration.
+Native CPA plugin for serialized configuration orchestration.
 
-Implemented slice:
+Implemented slices:
 
-- direct `plugins.configs.sync-config-write` ConfigYAML validation and secret environment indirection;
+- direct `plugins.configs.sync-config-write` ConfigYAML validation and environment-only secret indirection;
 - fixed no-proxy numeric-loopback CPA client;
-- persistent process instance, global queue/worker/status registry, operation coalescing, startup block, reconcile admission, bounded status retention, and deadline-preserving reconfigure;
-- five Writer management routes;
-- injected `Executor` seam returning sanitized `not_yet_implemented` outcomes.
+- persistent process instance, global queue/worker/status registry, operation coalescing, startup block, bounded retention, deadline-preserving reconfigure, and phase/attempt reporting;
+- exact-byte snapshot versioning and base64 planner envelopes;
+- path-aware membership and metadata ownership validation;
+- serialized full-config PUT, exact reread verification, four-plugin `sync_epoch` injection, runtime convergence evidence, and fail-closed reconciliation;
+- five Writer management routes.
 
-Deferred by design: YAML proposal/ownership/commit engine, provider `/api-call` relay, model-info catalog fetch/ingest, runtime convergence handshake, and UI.
+Deferred by design: provider `/api-call` continuation relay, model-info catalog fetch/ingest, worker-plugin conversion, and UI. Until the worker routes are converted, startup reconciliation safely remains blocked and write runs cannot complete.
 
 ## Build
 
