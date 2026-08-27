@@ -72,7 +72,7 @@ func main() {}
 
 var (
 	pluginVersion = "0.1.0"
-	pluginService = plugin.New(hostTransport{})
+	pluginService = plugin.New(hostAuth{})
 )
 
 //export cliproxy_plugin_init
@@ -123,12 +123,12 @@ func cliproxyPluginShutdown() {
 	C.clear_host_api()
 }
 
-func doHostHTTP(payload hostHTTPRequest) ([]byte, error) {
+func doHostCall(method string, payload any) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	cMethod := C.CString(pluginabi.MethodHostHTTPDo)
+	cMethod := C.CString(method)
 	defer C.free(unsafe.Pointer(cMethod))
 	var req *C.uint8_t
 	if len(body) > 0 {
@@ -136,14 +136,20 @@ func doHostHTTP(payload hostHTTPRequest) ([]byte, error) {
 		defer C.free(unsafe.Pointer(req))
 	}
 	var response C.cliproxy_buffer
-	if C.call_host_api(cMethod, req, C.size_t(len(body)), &response) != 0 {
-		return nil, fmt.Errorf("host.http.do failed")
+	callCode := C.call_host_api(cMethod, req, C.size_t(len(body)), &response)
+	var raw []byte
+	if response.ptr != nil && response.len > 0 {
+		raw = C.GoBytes(response.ptr, C.int(response.len))
 	}
-	if response.ptr == nil || response.len == 0 {
-		return nil, fmt.Errorf("empty host.http.do response")
+	if response.ptr != nil {
+		C.free_host_buffer(response.ptr, response.len)
 	}
-	raw := C.GoBytes(response.ptr, C.int(response.len))
-	C.free_host_buffer(response.ptr, response.len)
+	if callCode != 0 {
+		return nil, fmt.Errorf("host callback failed")
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty host callback response")
+	}
 	var env pluginabi.Envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return raw, nil
@@ -152,7 +158,7 @@ func doHostHTTP(payload hostHTTPRequest) ([]byte, error) {
 		if env.Error != nil {
 			return nil, fmt.Errorf("%s: %s", env.Error.Code, env.Error.Message)
 		}
-		return nil, fmt.Errorf("host.http.do not ok")
+		return nil, fmt.Errorf("host callback not ok")
 	}
 	if len(env.Result) == 0 {
 		return raw, nil

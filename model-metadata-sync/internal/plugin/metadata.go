@@ -1,10 +1,5 @@
 package plugin
 
-import (
-	"sort"
-	"strings"
-)
-
 var metadataFieldNames = []string{
 	"thinking.levels",
 	"max-context-length",
@@ -28,19 +23,6 @@ type ModelMetadataResult struct {
 	Fields []MetadataFieldResult `json:"fields"`
 }
 
-type MetadataSourceOption struct {
-	ID       string `json:"id"`
-	Website  string `json:"website"`
-	Provider string `json:"provider"`
-	AuthType string `json:"auth_type,omitempty"`
-	Label    string `json:"label"`
-}
-
-type MetadataSourcesResponse struct {
-	Sources []MetadataSourceOption `json:"sources"`
-	Errors  map[string]string      `json:"errors,omitempty"`
-}
-
 type fieldState struct {
 	value  any
 	source string
@@ -50,72 +32,20 @@ type fieldState struct {
 	tried  []string
 }
 
-func (s *Service) ListMetadataSources() MetadataSourcesResponse {
-	response := MetadataSourcesResponse{Errors: map[string]string{}}
-	modelparams, modelparamsErr := s.fetchModelparamsCatalog(s.Current().ModelparamsURL)
-	if modelparamsErr != nil {
-		response.Errors["modelparams.dev"] = modelparamsErr.Error()
-	} else {
-		for _, source := range modelparams.sources() {
-			response.Sources = append(response.Sources, MetadataSourceOption{
-				ID: source.ID, Website: source.Website, Provider: source.Provider, AuthType: source.AuthType,
-				Label: source.Website + " / " + source.Provider + " / " + source.AuthType,
-			})
+func cloneModels(models []ModelRef) []ModelRef {
+	out := make([]ModelRef, len(models))
+	copy(out, models)
+	for index := range out {
+		if out[index].Thinking != nil {
+			out[index].Thinking = &ThinkingConfig{Levels: append([]string(nil), out[index].Thinking.Levels...)}
 		}
-	}
-	modelsdev, modelsdevErr := s.fetchModelsdevCatalog(s.Current().ModelsdevURL)
-	if modelsdevErr != nil {
-		response.Errors["models.dev"] = modelsdevErr.Error()
-	} else {
-		for _, source := range modelsdev.sources() {
-			response.Sources = append(response.Sources, MetadataSourceOption{
-				ID: source.ID, Website: source.Website, Provider: source.Provider,
-				Label: source.Website + " / " + source.Provider,
-			})
-		}
-	}
-	if len(response.Errors) == 0 {
-		response.Errors = nil
-	}
-	return response
-}
-
-func (c *modelparamsCatalog) sources() []metadataSource {
-	seen := map[string]metadataSource{}
-	if c != nil {
-		for _, entry := range c.byKey {
-			id := "modelparams.dev/" + entry.Provider + "/" + entry.AuthType
-			seen[id] = metadataSource{ID: id, Website: "modelparams.dev", Provider: entry.Provider, AuthType: entry.AuthType}
-		}
-	}
-	return sortedMetadataSources(seen)
-}
-
-func (c *modelsdevCatalog) sources() []metadataSource {
-	seen := map[string]metadataSource{}
-	if c != nil {
-		for provider := range c.providers {
-			id := "models.dev/" + provider
-			seen[id] = metadataSource{ID: id, Website: "models.dev", Provider: provider}
-		}
-	}
-	return sortedMetadataSources(seen)
-}
-
-func sortedMetadataSources(seen map[string]metadataSource) []metadataSource {
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]metadataSource, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, seen[id])
+		out[index].InputModalities = append([]string(nil), out[index].InputModalities...)
+		out[index].OutputModalities = append([]string(nil), out[index].OutputModalities...)
 	}
 	return out
 }
 
-func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compiledChannel, modelparams *modelparamsCatalog, modelparamsErr error, modelsdev *modelsdevCatalog, modelsdevErr error) (reports []ModelMetadataResult, matched, missed int) {
+func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compiledChannel, modelparams *modelparamsCatalog, modelsdev *modelsdevCatalog) (reports []ModelMetadataResult, matched, missed int) {
 	reports = make([]ModelMetadataResult, 0, len(models))
 	thinkingRequested := spec.UpstreamMeta
 	hasModelsdevSource := false
@@ -159,7 +89,7 @@ func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compile
 				if outputOpen {
 					addFieldAttempt(states, "max-output-tokens", source.ID)
 				}
-				if !thinkingOpen && !outputOpen || modelparamsErr != nil {
+				if !thinkingOpen && !outputOpen {
 					continue
 				}
 				entry, ok := modelparams.lookupSource(source, models[i].Name)
@@ -187,7 +117,7 @@ func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compile
 						addFieldAttempt(states, field, source.ID)
 					}
 				}
-				if len(openFields) == 0 || modelsdevErr != nil {
+				if len(openFields) == 0 {
 					continue
 				}
 				entry, ok := modelsdev.lookupSource(source, models[i].Name)
@@ -207,9 +137,6 @@ func enrichModels(models []ModelRef, byID map[string]upstreamEntry, spec compile
 					reason = "tried sources supplied no value"
 				} else if name == "max-input-tokens" {
 					reason = "no automatic source supports this field; preserve an existing value or use manual override"
-				}
-				if errors := attemptedSourceErrors(state.tried, modelparamsErr, modelsdevErr); len(errors) > 0 {
-					reason += "; catalog errors: " + strings.Join(errors, "; ")
 				}
 				state = &fieldState{status: "skipped", reason: reason, tried: state.tried}
 			}
@@ -366,35 +293,4 @@ func addFieldAttempt(states map[string]*fieldState, field, source string) {
 		}
 	}
 	state.tried = append(state.tried, source)
-}
-
-func attemptedSourceErrors(tried []string, modelparamsErr, modelsdevErr error) []string {
-	needModelparams, needModelsdev := false, false
-	for _, source := range tried {
-		needModelparams = needModelparams || strings.HasPrefix(source, "modelparams.dev/")
-		needModelsdev = needModelsdev || strings.HasPrefix(source, "models.dev/")
-	}
-	var errors []string
-	if needModelparams && modelparamsErr != nil {
-		errors = append(errors, modelparamsErr.Error())
-	}
-	if needModelsdev && modelsdevErr != nil {
-		errors = append(errors, modelsdevErr.Error())
-	}
-	return errors
-}
-
-func sourceErrors(spec compiledChannel, modelparamsErr, modelsdevErr error) []string {
-	need := map[string]bool{}
-	for _, source := range spec.MetadataSources {
-		need[source.Website] = true
-	}
-	var errors []string
-	if need["modelparams.dev"] && modelparamsErr != nil {
-		errors = append(errors, modelparamsErr.Error())
-	}
-	if need["models.dev"] && modelsdevErr != nil {
-		errors = append(errors, modelsdevErr.Error())
-	}
-	return errors
 }

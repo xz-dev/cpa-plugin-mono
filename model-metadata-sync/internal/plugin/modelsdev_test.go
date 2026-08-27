@@ -70,6 +70,58 @@ func TestModelsdevSinglePrefixFallbackRejectsNestedCPAID(t *testing.T) {
 	}
 }
 
+func TestCatalogParsersFailClosedOnAmbiguity(t *testing.T) {
+	openAI := map[string]string{
+		"both wrappers":       `{"data":[{"id":"a"}],"models":[{"id":"b"}]}`,
+		"folded wrapper":      `{"DATA":[{"id":"a"}]}`,
+		"duplicate wrapper":   `{"data":[{"id":"a"}],"data":[{"id":"b"}]}`,
+		"mixed invalid entry": `{"data":[{"id":"a"},{"id":1}]}`,
+		"duplicate id":        `{"data":[{"id":"a"},{"id":"a"}]}`,
+		"conflicting id":      `{"data":[{"id":"a","name":"b"}]}`,
+		"folded field":        `{"data":[{"id":"a","MAX_TOKENS":4}]}`,
+		"fractional limit":    `{"data":[{"id":"a","max_tokens":4.5}]}`,
+		"trailing JSON":       `{"data":[{"id":"a"}]} {}`,
+	}
+	for name, raw := range openAI {
+		t.Run("openai "+name, func(t *testing.T) {
+			if _, err := parseOpenAICatalog([]byte(raw)); err == nil {
+				t.Fatal("ambiguous OpenAI catalog accepted")
+			}
+		})
+	}
+	claude := map[string]string{
+		"folded wrapper":   `{"DATA":[{"id":"a"}],"has_more":false}`,
+		"duplicate id":     `{"data":[{"id":"a"},{"id":"a"}],"has_more":false}`,
+		"missing id":       `{"data":[{"max_tokens":4}],"has_more":false}`,
+		"folded field":     `{"data":[{"id":"a","MAX_TOKENS":4}],"has_more":false}`,
+		"negative limit":   `{"data":[{"id":"a","max_tokens":-1}],"has_more":false}`,
+		"duplicate nested": `{"data":[{"id":"a","supported_reasoning_levels":[{"effort":"low","Effort":"high"}]}],"has_more":false}`,
+		"trailing JSON":    `{"data":[],"has_more":false} []`,
+	}
+	for name, raw := range claude {
+		t.Run("claude "+name, func(t *testing.T) {
+			if _, _, _, err := parseClaudeCatalog([]byte(raw)); err == nil {
+				t.Fatal("ambiguous Claude catalog accepted")
+			}
+		})
+	}
+	modelsdev := map[string]string{
+		"duplicate provider": `{"openai":{"models":{"a":{"limit":{"context":1}}}},"OpenAI":{"models":{"b":{"limit":{"context":2}}}}}`,
+		"folded models":      `{"openai":{"Models":{"a":{"limit":{"context":1}}}}}`,
+		"folded limit":       `{"openai":{"models":{"a":{"Limit":{"context":1}}}}}`,
+		"negative limit":     `{"openai":{"models":{"a":{"limit":{"context":-1}}}}}`,
+		"duplicate nested":   `{"openai":{"models":{"a":{"limit":{"context":1,"Context":2}}}}}`,
+		"trailing JSON":      `{"openai":{"models":{"a":{"limit":{"context":1}}}}} {}`,
+	}
+	for name, raw := range modelsdev {
+		t.Run("modelsdev "+name, func(t *testing.T) {
+			if _, err := parseModelsdevCatalog([]byte(raw)); err == nil {
+				t.Fatal("ambiguous models.dev catalog accepted")
+			}
+		})
+	}
+}
+
 func TestDecodeUpstreamMaxTokens(t *testing.T) {
 	entries, err := parseOpenAICatalog([]byte(`{"models":[
 		{"slug":"gpt-5.6-sol","context_window":272000,"max_tokens":128000},

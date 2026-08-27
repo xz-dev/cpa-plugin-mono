@@ -2,210 +2,194 @@ package plugin
 
 import (
 	"bytes"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
-	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
 	KindOpenAI = "openai-compatibility"
 	KindClaude = "claude"
+
+	defaultModelparamsURL = "https://modelparams.dev/api/v1/models.json"
+	defaultModelsdevURL   = "https://models.dev/api.json"
 )
 
-type FileConfig struct {
-	Interval          string          `json:"interval"`
-	ManagementBaseURL string          `json:"management_base_url"`
-	ManagementKeyEnv  string          `json:"management_key_env"`
-	ManagementKeyFile string          `json:"management_key_file"`
-	ModelparamsURL    string          `json:"modelparams_url,omitempty"`
-	ModelsdevURL      string          `json:"modelsdev_url,omitempty"`
-	Channels          []ChannelConfig `json:"channels"`
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+type PlannerConfig struct {
+	WorkerTokenEnv string          `yaml:"worker_token_env" json:"worker_token_env"`
+	SyncEpoch      string          `yaml:"sync_epoch,omitempty" json:"sync_epoch,omitempty"`
+	Channels       []ChannelConfig `yaml:"channels" json:"channels"`
 }
 
 type ChannelConfig struct {
-	Enabled         bool                     `json:"enabled"`
-	Kind            string                   `json:"kind"`
-	Selector        ChannelSelector          `json:"selector"`
-	UpstreamMeta    bool                     `json:"upstream_meta,omitempty"`
-	CodexManifest   bool                     `json:"codex_manifest,omitempty"`
-	Profile         string                   `json:"profile,omitempty"`
-	MetadataSources []string                 `json:"metadata_sources,omitempty"`
-	Overrides       map[string]ModelOverride `json:"overrides,omitempty"`
+	Enabled         bool                     `yaml:"enabled" json:"enabled"`
+	Kind            string                   `yaml:"kind" json:"kind"`
+	Selector        ChannelSelector          `yaml:"selector" json:"selector"`
+	UpstreamMeta    bool                     `yaml:"upstream_meta,omitempty" json:"upstream_meta,omitempty"`
+	CodexManifest   bool                     `yaml:"codex_manifest,omitempty" json:"codex_manifest,omitempty"`
+	MetadataSources []string                 `yaml:"metadata_sources,omitempty" json:"metadata_sources,omitempty"`
+	Overrides       map[string]ModelOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 }
 
 type ChannelSelector struct {
-	Name        string `json:"name,omitempty"`
-	BaseURL     string `json:"base_url"`
-	ConfigIndex *int   `json:"config_index,omitempty"`
-	Prefix      string `json:"prefix,omitempty"`
+	Name        string `yaml:"name,omitempty" json:"name,omitempty"`
+	BaseURL     string `yaml:"base_url" json:"base_url"`
+	ConfigIndex *int   `yaml:"config_index,omitempty" json:"config_index,omitempty"`
+	Prefix      string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 type metadataSource struct {
-	ID, Website, Provider, AuthType string
+	ID       string `json:"id"`
+	Website  string `json:"website"`
+	Provider string `json:"provider"`
+	AuthType string `json:"auth_type,omitempty"`
 }
 
 type ModelOverride struct {
-	MaxContextLength int      `json:"max_context_length,omitempty"`
-	MaxInputTokens   int      `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
-	ThinkingLevels   []string `json:"thinking_levels,omitempty"`
-	InputModalities  []string `json:"input_modalities,omitempty"`
-	OutputModalities []string `json:"output_modalities,omitempty"`
+	MaxContextLength int      `yaml:"max_context_length,omitempty" json:"max_context_length,omitempty"`
+	MaxInputTokens   int      `yaml:"max_input_tokens,omitempty" json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  int      `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
+	ThinkingLevels   []string `yaml:"thinking_levels,omitempty" json:"thinking_levels,omitempty"`
+	InputModalities  []string `yaml:"input_modalities,omitempty" json:"input_modalities,omitempty"`
+	OutputModalities []string `yaml:"output_modalities,omitempty" json:"output_modalities,omitempty"`
 }
 
 type compiledChannel struct {
-	Enabled         bool
-	Kind            string
-	Selector        ChannelSelector
-	UpstreamMeta    bool
-	CodexManifest   bool
-	Profile         string
-	MetadataSources []metadataSource
-	Overrides       map[string]ModelOverride
+	Enabled         bool                     `json:"enabled"`
+	Kind            string                   `json:"kind"`
+	Selector        ChannelSelector          `json:"selector"`
+	UpstreamMeta    bool                     `json:"upstream_meta"`
+	CodexManifest   bool                     `json:"codex_manifest"`
+	MetadataSources []metadataSource         `json:"metadata_sources"`
+	Overrides       map[string]ModelOverride `json:"overrides"`
 }
 
 type runtimeConfig struct {
-	Interval          time.Duration
-	ManagementBaseURL string
-	ManagementKeyEnv  string
-	ManagementKeyFile string
-	ModelparamsURL    string
-	ModelsdevURL      string
-	Channels          []compiledChannel
-	Raw               FileConfig
+	WorkerToken string
+	Channels    []compiledChannel
+	SHA256      string
+	Generation  uint64
+	AttemptID   string
 }
 
-func defaultFileConfig() FileConfig {
-	return FileConfig{Interval: "0", ManagementBaseURL: "http://127.0.0.1:8317", Channels: []ChannelConfig{}}
-}
-
-func parseFileConfig(raw []byte) (runtimeConfig, error) {
-	cfg := defaultFileConfig()
-	if len(bytes.TrimSpace(raw)) > 0 {
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&cfg); err != nil {
-			return runtimeConfig{}, fmt.Errorf("decode model-metadata-sync channels schema (combined provider-name config is no longer supported): %w", err)
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			return runtimeConfig{}, fmt.Errorf("decode model-metadata-sync: trailing JSON value")
-		}
+func parseConfig(raw []byte) (runtimeConfig, error) {
+	nodeDecoder := yaml.NewDecoder(bytes.NewReader(raw))
+	var document yaml.Node
+	if err := nodeDecoder.Decode(&document); err != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode || validateMappings(document.Content[0], make(map[*yaml.Node]bool)) != nil || hasYAMLIndirection(document.Content[0], make(map[*yaml.Node]bool)) {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
 	}
-	return compileConfig(cfg)
-}
-
-func compileConfig(cfg FileConfig) (runtimeConfig, error) {
-	cfg.ManagementBaseURL = strings.TrimRight(strings.TrimSpace(cfg.ManagementBaseURL), "/")
-	if cfg.ManagementBaseURL == "" {
-		cfg.ManagementBaseURL = "http://127.0.0.1:8317"
+	var trailing yaml.Node
+	if err := nodeDecoder.Decode(&trailing); err != io.EOF {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
 	}
-	cfg.ManagementKeyEnv = strings.TrimSpace(cfg.ManagementKeyEnv)
-	cfg.ManagementKeyFile = strings.TrimSpace(cfg.ManagementKeyFile)
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	var cfg PlannerConfig
+	if err := decoder.Decode(&cfg); err != nil {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
+	}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
+	}
+	cfg.WorkerTokenEnv = strings.TrimSpace(cfg.WorkerTokenEnv)
+	if !envNamePattern.MatchString(cfg.WorkerTokenEnv) {
+		return runtimeConfig{}, fmt.Errorf("worker_token_env is required")
+	}
+	token := os.Getenv(cfg.WorkerTokenEnv)
+	if token == "" {
+		return runtimeConfig{}, fmt.Errorf("worker coordination token is unavailable")
+	}
 	if cfg.Channels == nil {
 		cfg.Channels = []ChannelConfig{}
 	}
-	var interval time.Duration
-	if value := strings.TrimSpace(cfg.Interval); value != "" && value != "0" {
-		parsed, err := time.ParseDuration(value)
-		if err != nil || parsed < 0 {
-			return runtimeConfig{}, fmt.Errorf("interval must be a non-negative Go duration")
-		}
-		interval = parsed
-	}
-	out := runtimeConfig{
-		Interval: interval, ManagementBaseURL: cfg.ManagementBaseURL, ManagementKeyEnv: cfg.ManagementKeyEnv,
-		ManagementKeyFile: cfg.ManagementKeyFile, ModelparamsURL: strings.TrimSpace(cfg.ModelparamsURL), ModelsdevURL: strings.TrimSpace(cfg.ModelsdevURL), Raw: cfg,
-	}
-	seen := map[string]struct{}{}
-	for i, spec := range cfg.Channels {
+	out := runtimeConfig{WorkerToken: token}
+	sum := sha256.Sum256(raw)
+	out.SHA256 = hex.EncodeToString(sum[:])
+	seen := make(map[string]bool)
+	enabled := 0
+	for index, spec := range cfg.Channels {
 		kind := strings.ToLower(strings.TrimSpace(spec.Kind))
 		if kind != KindOpenAI && kind != KindClaude {
-			return runtimeConfig{}, fmt.Errorf("channels[%d].kind must be %s or %s", i, KindOpenAI, KindClaude)
+			return runtimeConfig{}, fmt.Errorf("channels[%d].kind must be %s or %s", index, KindOpenAI, KindClaude)
 		}
 		selector, err := normalizeSelector(kind, spec.Selector)
 		if err != nil {
-			return runtimeConfig{}, fmt.Errorf("channels[%d].selector: %w", i, err)
+			return runtimeConfig{}, fmt.Errorf("channels[%d].selector: %w", index, err)
 		}
 		key := selectorKey(kind, selector)
-		if _, exists := seen[key]; exists {
-			return runtimeConfig{}, fmt.Errorf("channels[%d]: duplicate selector %s", i, key)
+		if seen[key] {
+			return runtimeConfig{}, fmt.Errorf("channels[%d]: duplicate selector", index)
 		}
-		seen[key] = struct{}{}
-		profile := strings.TrimSpace(spec.Profile)
-		if profile == "" {
-			if kind == KindClaude {
-				profile = "claude_models"
-			} else {
-				profile = "openai_models"
+		seen[key] = true
+		if spec.CodexManifest && kind != KindOpenAI {
+			return runtimeConfig{}, fmt.Errorf("channels[%d]: codex_manifest requires openai-compatibility", index)
+		}
+		compiled := compiledChannel{Enabled: spec.Enabled, Kind: kind, Selector: selector, UpstreamMeta: spec.UpstreamMeta, CodexManifest: spec.CodexManifest, Overrides: map[string]ModelOverride{}}
+		if spec.Enabled {
+			enabled++
+			if enabled > 100 {
+				return runtimeConfig{}, fmt.Errorf("at most 100 channels may be enabled")
 			}
 		}
-		if (kind == KindOpenAI && profile != "openai_models") || (kind == KindClaude && profile != "claude_models") {
-			return runtimeConfig{}, fmt.Errorf("channels[%d]: profile %q does not match kind %q", i, profile, kind)
-		}
-		compiled := compiledChannel{Enabled: spec.Enabled, Kind: kind, Selector: selector, UpstreamMeta: spec.UpstreamMeta, CodexManifest: spec.CodexManifest, Profile: profile, Overrides: map[string]ModelOverride{}}
-		seenSources, modelsdevSeen := map[string]struct{}{}, false
-		for j, rawSource := range spec.MetadataSources {
+		seenSources, modelsdevSeen := map[string]bool{}, false
+		for sourceIndex, rawSource := range spec.MetadataSources {
 			source, err := parseMetadataSource(rawSource)
 			if err != nil {
-				return runtimeConfig{}, fmt.Errorf("channels[%d].metadata_sources[%d]: %w", i, j, err)
+				return runtimeConfig{}, fmt.Errorf("channels[%d].metadata_sources[%d]: %w", index, sourceIndex, err)
 			}
-			if _, duplicate := seenSources[source.ID]; duplicate {
-				return runtimeConfig{}, fmt.Errorf("channels[%d]: duplicate source %q", i, source.ID)
+			if seenSources[source.ID] {
+				return runtimeConfig{}, fmt.Errorf("channels[%d]: duplicate metadata source", index)
 			}
 			if source.Website == "modelparams.dev" && modelsdevSeen {
-				return runtimeConfig{}, fmt.Errorf("channels[%d]: modelparams.dev sources must precede models.dev sources", i)
+				return runtimeConfig{}, fmt.Errorf("channels[%d]: modelparams.dev sources must precede models.dev sources", index)
 			}
+			seenSources[source.ID] = true
 			modelsdevSeen = modelsdevSeen || source.Website == "models.dev"
-			seenSources[source.ID] = struct{}{}
 			compiled.MetadataSources = append(compiled.MetadataSources, source)
 		}
 		for model, override := range spec.Overrides {
-			if model == "" || model != strings.TrimSpace(model) {
-				return runtimeConfig{}, fmt.Errorf("channels[%d]: override model names must be exact non-empty upstream names", i)
+			if model == "" || model != strings.TrimSpace(model) || len(model) > 1024 || hasControl(model) {
+				return runtimeConfig{}, fmt.Errorf("channels[%d]: override model names must be exact non-empty upstream names", index)
 			}
 			if override.MaxContextLength < 0 || override.MaxInputTokens < 0 || override.MaxOutputTokens < 0 {
-				return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: token limits must be >= 0", i, model)
+				return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: token limits must be >= 0", index, model)
 			}
 			if len(override.ThinkingLevels) > 0 {
 				for _, level := range override.ThinkingLevels {
 					if _, ok := cpaThinkingLevels[strings.ToLower(strings.TrimSpace(level))]; !ok {
-						return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: unsupported thinking level %q", i, model, level)
+						return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: unsupported thinking level", index, model)
 					}
 				}
 				override.ThinkingLevels = normalizeEfforts(override.ThinkingLevels)
 				if len(override.ThinkingLevels) == 0 {
-					return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: thinking_levels must include a reasoning depth", i, model)
+					return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: thinking_levels require a reasoning depth", index, model)
 				}
 			}
 			for field, values := range map[string][]string{"input_modalities": override.InputModalities, "output_modalities": override.OutputModalities} {
 				if len(values) == 0 {
 					continue
 				}
-				normalized := uniqueNormalized(values)
-				valid := true
-				for _, value := range normalized {
+				for _, value := range uniqueNormalized(values) {
 					if value != "text" && value != "image" {
-						valid = false
+						return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: %s supports only text/image", index, model, field)
 					}
-				}
-				if !valid {
-					return runtimeConfig{}, fmt.Errorf("channels[%d] model %s: %s supports only text/image", i, model, field)
 				}
 			}
 			override.InputModalities = cpaModalities(override.InputModalities)
 			override.OutputModalities = cpaModalities(override.OutputModalities)
 			compiled.Overrides[model] = override
 		}
-		cfg.Channels[i].Kind, cfg.Channels[i].Selector, cfg.Channels[i].Profile = kind, selector, profile
 		out.Channels = append(out.Channels, compiled)
 	}
-	out.Raw = cfg
 	return out, nil
 }
 
@@ -214,32 +198,27 @@ func normalizeSelector(kind string, selector ChannelSelector) (ChannelSelector, 
 	if err != nil {
 		return ChannelSelector{}, err
 	}
-	selector.BaseURL, selector.Name, selector.Prefix = base, strings.TrimSpace(selector.Name), strings.Trim(strings.TrimSpace(selector.Prefix), "/")
+	selector.BaseURL = base
+	selector.Name = strings.TrimSpace(selector.Name)
+	selector.Prefix = strings.Trim(strings.TrimSpace(selector.Prefix), "/")
 	if kind == KindOpenAI {
-		if selector.Name == "" || selector.ConfigIndex != nil || selector.Prefix != "" {
+		if selector.Name == "" || len(selector.Name) > 1024 || hasControl(selector.Name) || selector.ConfigIndex != nil || selector.Prefix != "" {
 			return ChannelSelector{}, fmt.Errorf("openai-compatibility requires name + base_url only")
 		}
-	} else if selector.ConfigIndex == nil || *selector.ConfigIndex < 0 || selector.Name != "" {
-		return ChannelSelector{}, fmt.Errorf("claude requires config_index + base_url + prefix and no name")
+	} else if selector.ConfigIndex == nil || *selector.ConfigIndex < 0 || selector.Name != "" || len(selector.Prefix) > 256 || hasControl(selector.Prefix) {
+		return ChannelSelector{}, fmt.Errorf("claude requires config_index + base_url + optional prefix and no name")
 	}
 	return selector, nil
 }
 
 func normalizeBaseURL(raw string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("base_url must be an absolute HTTP(S) URL")
-	}
-	if parsed.User != nil || parsed.Fragment != "" {
-		return "", fmt.Errorf("base_url must not contain userinfo or fragment")
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("base_url scheme must be http or https")
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.RawPath != "" {
+		return "", fmt.Errorf("base_url must be an absolute HTTPS URL without query or fragment")
 	}
 	host := strings.ToLower(parsed.Hostname())
 	port := parsed.Port()
-	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+	if port == "443" {
 		port = ""
 	}
 	if strings.Contains(host, ":") {
@@ -248,6 +227,7 @@ func normalizeBaseURL(raw string) (string, error) {
 	if port != "" {
 		host += ":" + port
 	}
+	parsed.Scheme = "https"
 	parsed.Host = host
 	if parsed.Path == "/" {
 		parsed.Path = ""
@@ -278,85 +258,22 @@ func parseMetadataSource(raw string) (metadataSource, error) {
 	default:
 		return metadataSource{}, fmt.Errorf("invalid source %q", raw)
 	}
-	if source.Provider != strings.ToLower(source.Provider) || strings.TrimSpace(source.Provider) != source.Provider {
+	if len(source.Provider) > 256 || hasControl(source.Provider) || source.Provider != strings.ToLower(source.Provider) || strings.TrimSpace(source.Provider) != source.Provider {
 		return metadataSource{}, fmt.Errorf("source provider must be lowercase without whitespace")
 	}
 	return source, nil
 }
 
 func uniqueNormalized(values []string) []string {
-	seen := map[string]struct{}{}
+	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		normalized := strings.ToLower(strings.TrimSpace(value))
-		if _, exists := seen[normalized]; exists {
+		if normalized == "" || seen[normalized] {
 			continue
 		}
-		seen[normalized] = struct{}{}
+		seen[normalized] = true
 		out = append(out, normalized)
 	}
 	return out
-}
-
-func loadJSONFile(path string) (runtimeConfig, []byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			cfg, cerr := compileConfig(defaultFileConfig())
-			return cfg, nil, cerr
-		}
-		return runtimeConfig{}, nil, err
-	}
-	cfg, err := parseFileConfig(raw)
-	return cfg, raw, err
-}
-
-func writeJSONFile(path string, cfg FileConfig) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	raw = append(raw, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func resolveJSONPath(pluginYAML []byte) string {
-	path := "plugins/model-metadata-sync/config.json"
-	var wrapper struct {
-		ConfigFile string `json:"config_file"`
-	}
-	_ = json.Unmarshal(pluginYAML, &wrapper)
-	if value := strings.TrimSpace(wrapper.ConfigFile); value != "" {
-		return value
-	}
-	for _, line := range strings.Split(string(pluginYAML), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "config_file:") {
-			if value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "config_file:")), `"'`); value != "" {
-				return value
-			}
-		}
-	}
-	return path
-}
-
-func resolveManagementKey(cfg runtimeConfig) string {
-	if cfg.ManagementKeyFile != "" {
-		if raw, err := os.ReadFile(cfg.ManagementKeyFile); err == nil {
-			if key := strings.TrimSpace(string(raw)); key != "" {
-				return key
-			}
-		}
-	}
-	if cfg.ManagementKeyEnv != "" {
-		return strings.TrimSpace(os.Getenv(cfg.ManagementKeyEnv))
-	}
-	return ""
 }

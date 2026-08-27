@@ -1,117 +1,109 @@
 package plugin
 
 import (
-	_ "embed"
 	"encoding/json"
 	"net/http"
-	"os"
-	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-//go:embed ui.html
-var uiHTML []byte
+const (
+	planPath          = "/v0/management/plugins/model-metadata-sync/plan"
+	writerStatusPath  = "/v0/management/plugins/model-metadata-sync/writer-status"
+	workerTokenHeader = "X-Sync-Config-Writer-Token"
+)
 
 func (s *Service) ManagementRoutes() pluginapi.ManagementRegistrationResponse {
-	base := "/v0/management/plugins/model-metadata-sync/"
-	return pluginapi.ManagementRegistrationResponse{
-		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: base + "status", Description: "Last metadata sync report"},
-			{Method: http.MethodGet, Path: base + "json", Description: "Read metadata sync config"},
-			{Method: http.MethodPut, Path: base + "json", Description: "Write metadata sync config"},
-			{Method: http.MethodGet, Path: base + "channels", Description: "List sanitized model channels"},
-			{Method: http.MethodGet, Path: base + "metadata-sources", Description: "List external metadata source identities"},
-			{Method: http.MethodPost, Path: base + "preview", Description: "Preview metadata patches"},
-			{Method: http.MethodPost, Path: base + "sync", Description: "Run metadata sync"},
-		},
-		Resources: []pluginapi.ResourceRoute{{Path: "/index.html", Menu: "Model Metadata Sync", Description: "Enrich existing channel models without changing membership"}},
-	}
+	return pluginapi.ManagementRegistrationResponse{Routes: []pluginapi.ManagementRoute{
+		{Method: http.MethodPost, Path: planPath, Description: "Compute existing-model metadata proposal"},
+		{Method: http.MethodGet, Path: writerStatusPath, Description: "Report Writer coordination status"},
+	}}
 }
 
-func (s *Service) HandleManagement(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	path := strings.TrimSpace(req.Path)
-	key := bearerKey(req.Headers)
-	if key == "" {
-		key = resolveManagementKey(s.Current())
+func (s *Service) HandleManagement(request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	if request.Path != planPath && request.Path != writerStatusPath {
+		return jsonResponse(http.StatusNotFound, map[string]string{"error_code": errorInvalid})
 	}
-	only := strings.TrimSpace(req.Query.Get("channel"))
-	if only == "" {
-		only = strings.TrimSpace(req.Query.Get("provider"))
-	}
+	token := request.Headers.Get(workerTokenHeader)
 	switch {
-	case req.Method == http.MethodGet && strings.HasSuffix(path, "/status"):
-		return jsonResponse(http.StatusOK, s.statusPayload())
-	case req.Method == http.MethodGet && strings.HasSuffix(path, "/channels"):
-		channels, err := s.ListChannelSummaries(key)
-		if err != nil {
-			return jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()})
+	case request.Method == http.MethodGet && request.Path == writerStatusPath:
+		status, ok := s.authorizedWorkerStatus(token)
+		if !ok {
+			return jsonResponse(http.StatusUnauthorized, map[string]string{"error_code": "unauthorized"})
 		}
-		return jsonResponse(http.StatusOK, map[string]any{"channels": channels})
-	case req.Method == http.MethodGet && strings.HasSuffix(path, "/metadata-sources"):
-		return jsonResponse(http.StatusOK, s.ListMetadataSources())
-	case req.Method == http.MethodGet && strings.HasSuffix(path, "/json"):
-		return s.readConfigResponse()
-	case req.Method == http.MethodPut && strings.HasSuffix(path, "/json"):
-		if err := s.SaveJSON(req.Body); err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return jsonResponse(http.StatusOK, status)
+	case request.Method == http.MethodPost && request.Path == planPath:
+		cfg, ok := s.beginAuthorizedPlan(token)
+		if !ok {
+			return jsonResponse(http.StatusUnauthorized, map[string]string{"error_code": "unauthorized"})
 		}
-		return jsonResponse(http.StatusOK, map[string]string{"status": "ok"})
-	case req.Method == http.MethodPost && strings.HasSuffix(path, "/preview"):
-		report, err := s.PreviewWithKey(key, only, req.Body)
-		if err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		defer s.endPlan()
+		result, code := s.executePlan(request.Body, cfg)
+		if code != "" {
+			return jsonResponse(errorStatus(code), map[string]string{"error_code": code})
 		}
-		return jsonResponse(reportStatus(report.OK), report)
-	case req.Method == http.MethodPost && strings.HasSuffix(path, "/sync"):
-		if len(req.Body) > 0 {
-			if err := s.SaveJSON(req.Body); err != nil {
-				return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
-			}
-		}
-		report := s.SyncWithKey(key, only)
-		return jsonResponse(reportStatus(report.OK), report)
+		return jsonResponse(http.StatusOK, result)
 	default:
-		return s.uiResponse()
+		if !s.authorized(token) {
+			return jsonResponse(http.StatusUnauthorized, map[string]string{"error_code": "unauthorized"})
+		}
+		return jsonResponse(http.StatusMethodNotAllowed, map[string]string{"error_code": errorInvalid})
 	}
 }
 
-func reportStatus(ok bool) int {
-	if ok {
-		return http.StatusOK
-	}
-	return http.StatusBadGateway
-}
-func (s *Service) statusPayload() map[string]any {
-	cfg := s.Current()
-	selectors := []map[string]any{}
-	for _, channel := range cfg.Channels {
-		selectors = append(selectors, map[string]any{"kind": channel.Kind, "selector": channel.Selector})
-	}
-	return map[string]any{"config_file": s.JSONPath(), "interval": cfg.Raw.Interval, "channels": selectors, "has_key": resolveManagementKey(cfg) != "", "last": s.Last()}
-}
-func (s *Service) readConfigResponse() pluginapi.ManagementResponse {
-	raw, err := os.ReadFile(s.JSONPath())
+func (s *Service) executePlan(raw []byte, cfg runtimeConfig) (any, string) {
+	request, err := decodePlannerRequest(raw)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return nil, errorInvalid
+	}
+	var attemptID string
+	var ok bool
+	if request.FetchResult == nil {
+		attemptID, ok = s.startPlannerAttempt(cfg.Generation)
+	} else {
+		attemptID, ok = s.consumePlannerStep(request.FetchResult.RequestID, cfg.Generation)
+	}
+	if !ok {
+		return nil, errorInvalid
+	}
+	cfg.AttemptID = attemptID
+	result, code := planDecoded(request, cfg, s.host)
+	if code != "" {
+		s.abandonPlannerAttempt(attemptID, cfg.Generation)
+		return nil, code
+	}
+	switch envelope := result.(type) {
+	case fetchEnvelope:
+		if !s.registerPlannerStep(attemptID, envelope.NextFetch.RequestID, cfg.Generation) {
+			return nil, errorInvalid
 		}
-		raw, _ = json.MarshalIndent(defaultFileConfig(), "", "  ")
-		raw = append(raw, '\n')
+	case finalEnvelope:
+		if !s.completePlannerAttempt(attemptID, cfg.Generation) {
+			return nil, errorInvalid
+		}
+	default:
+		s.abandonPlannerAttempt(attemptID, cfg.Generation)
+		return nil, errorInvalid
 	}
-	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: raw}
+	return result, ""
 }
-func (s *Service) uiResponse() pluginapi.ManagementResponse {
-	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}, Body: uiHTML}
+
+func errorStatus(code string) int {
+	switch code {
+	case errorCredential:
+		return http.StatusUnprocessableEntity
+	case errorTooLarge:
+		return http.StatusRequestEntityTooLarge
+	default:
+		return http.StatusBadRequest
+	}
 }
+
 func jsonResponse(status int, value any) pluginapi.ManagementResponse {
-	raw, _ := json.Marshal(value)
-	return pluginapi.ManagementResponse{StatusCode: status, Headers: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: raw}
-}
-func bearerKey(headers http.Header) string {
-	value := strings.TrimSpace(headers.Get("Authorization"))
-	if len(value) >= 7 && strings.EqualFold(value[:7], "bearer ") {
-		return strings.TrimSpace(value[7:])
+	raw, err := json.Marshal(value)
+	if err != nil {
+		raw = []byte(`{"error_code":"provider_fetch_invalid"}`)
+		status = http.StatusInternalServerError
 	}
-	return ""
+	return pluginapi.ManagementResponse{StatusCode: status, Headers: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: raw}
 }

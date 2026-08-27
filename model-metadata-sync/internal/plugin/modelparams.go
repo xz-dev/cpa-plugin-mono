@@ -1,13 +1,13 @@
 package plugin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 )
-
-const defaultModelparamsURL = "https://modelparams.dev/api/v1/models.json"
 
 var cpaThinkingLevels = map[string]struct{}{
 	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {},
@@ -39,57 +39,122 @@ type modelparamsParam struct {
 }
 
 type modelparamsCatalog struct {
-	byKey map[string]modelparamsEntry
-}
-
-func (s *Service) fetchModelparamsCatalog(url string) (*modelparamsCatalog, error) {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		url = defaultModelparamsURL
-	}
-	headers := http.Header{}
-	headers.Set("Accept", "application/json")
-	headers.Set("User-Agent", "model-metadata-sync")
-	status, body, err := s.transport.Do(http.MethodGet, url, headers, nil)
-	if err != nil {
-		return nil, fmt.Errorf("modelparams: %w", err)
-	}
-	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("modelparams HTTP %d %s", status, truncate(body, 200))
-	}
-	return parseModelparamsCatalog(body)
+	ByKey map[string]modelparamsEntry `json:"by_key"`
 }
 
 func parseModelparamsCatalog(raw []byte) (*modelparamsCatalog, error) {
-	var wrapped struct {
-		Models []modelparamsEntry `json:"models"`
+	if err := validateCatalogJSON(raw); err != nil {
+		return nil, fmt.Errorf("modelparams: unrecognized catalog")
 	}
-	var list []modelparamsEntry
-	switch {
-	case json.Unmarshal(raw, &wrapped) == nil && len(wrapped.Models) > 0:
-		list = wrapped.Models
-	case json.Unmarshal(raw, &list) == nil && len(list) > 0:
+	trimmed := bytes.TrimSpace(raw)
+	var items []json.RawMessage
+	switch trimmed[0] {
+	case '[':
+		if json.Unmarshal(trimmed, &items) != nil || items == nil {
+			return nil, fmt.Errorf("modelparams: unrecognized catalog")
+		}
+	case '{':
+		wrapped, err := catalogObject(trimmed)
+		if err != nil || hasFoldedCatalogField(wrapped, "models") {
+			return nil, fmt.Errorf("modelparams: unrecognized catalog")
+		}
+		models, ok := wrapped["models"]
+		if !ok || json.Unmarshal(models, &items) != nil || items == nil {
+			return nil, fmt.Errorf("modelparams: unrecognized catalog")
+		}
 	default:
 		return nil, fmt.Errorf("modelparams: unrecognized catalog")
 	}
-	cat := &modelparamsCatalog{byKey: map[string]modelparamsEntry{}}
-	for _, e := range list {
-		e.Provider = strings.ToLower(strings.TrimSpace(e.Provider))
-		e.Model = strings.TrimSpace(e.Model)
-		e.AuthType = strings.ToLower(strings.TrimSpace(e.AuthType))
-		if e.Provider == "" || e.Model == "" {
-			continue
+	cat := &modelparamsCatalog{ByKey: map[string]modelparamsEntry{}}
+	for _, rawEntry := range items {
+		fields, err := catalogObject(rawEntry)
+		if err != nil || hasAnyFoldedCatalogField(fields, "provider", "authType", "model", "params") {
+			return nil, fmt.Errorf("modelparams: invalid entry")
 		}
-		if e.AuthType == "" {
-			e.AuthType = "api_key"
+		var entry modelparamsEntry
+		if json.Unmarshal(rawEntry, &entry) != nil {
+			return nil, fmt.Errorf("modelparams: invalid entry")
 		}
-		key := e.Provider + "/" + strings.ToLower(e.Model) + "/" + e.AuthType
-		cat.byKey[key] = e
+		var rawParams []json.RawMessage
+		if rawValue, ok := fields["params"]; ok {
+			if json.Unmarshal(rawValue, &rawParams) != nil {
+				return nil, fmt.Errorf("modelparams: invalid parameters")
+			}
+		}
+		entry.Params = make([]modelparamsParam, 0, len(rawParams))
+		for _, rawParam := range rawParams {
+			paramFields, err := catalogObject(rawParam)
+			if err != nil || hasAnyFoldedCatalogField(paramFields, "path", "group", "type", "values", "range") {
+				return nil, fmt.Errorf("modelparams: invalid parameter")
+			}
+			if rawRange, ok := paramFields["range"]; ok {
+				rangeFields, err := catalogObject(rawRange)
+				if err != nil || hasFoldedCatalogField(rangeFields, "max") {
+					return nil, fmt.Errorf("modelparams: invalid parameter range")
+				}
+			}
+			var param modelparamsParam
+			if json.Unmarshal(rawParam, &param) != nil || param.Path == "" || param.Path != strings.TrimSpace(param.Path) || param.Group != strings.TrimSpace(param.Group) || param.Type != strings.TrimSpace(param.Type) || hasControl(param.Path) || hasControl(param.Group) || hasControl(param.Type) || !validCatalogInteger(param.Range.Max) {
+				return nil, fmt.Errorf("modelparams: invalid parameter")
+			}
+			if param.Type == "enum" {
+				for _, value := range param.Values {
+					if _, ok := value.(string); !ok {
+						return nil, fmt.Errorf("modelparams: invalid enum parameter")
+					}
+				}
+			}
+			entry.Params = append(entry.Params, param)
+		}
+		entry.Provider = strings.ToLower(strings.TrimSpace(entry.Provider))
+		entry.Model = strings.TrimSpace(entry.Model)
+		entry.AuthType = strings.ToLower(strings.TrimSpace(entry.AuthType))
+		if entry.Provider == "" || entry.Model == "" || hasControl(entry.Provider) || hasControl(entry.Model) || hasControl(entry.AuthType) {
+			return nil, fmt.Errorf("modelparams: invalid entry")
+		}
+		if entry.AuthType == "" {
+			entry.AuthType = "api_key"
+		}
+		seenPaths := make(map[string]bool)
+		for _, param := range entry.Params {
+			if seenPaths[param.Path] {
+				return nil, fmt.Errorf("modelparams: invalid parameter")
+			}
+			seenPaths[param.Path] = true
+		}
+		key := entry.Provider + "/" + strings.ToLower(entry.Model) + "/" + entry.AuthType
+		if _, duplicate := cat.ByKey[key]; duplicate {
+			return nil, fmt.Errorf("modelparams: duplicate entry")
+		}
+		cat.ByKey[key] = entry
 	}
-	if len(cat.byKey) == 0 {
+	if len(cat.ByKey) == 0 {
 		return nil, fmt.Errorf("modelparams: empty catalog")
 	}
 	return cat, nil
+}
+
+func validModelparamsCatalog(catalog *modelparamsCatalog) bool {
+	if catalog == nil || len(catalog.ByKey) == 0 {
+		return false
+	}
+	keys := make([]string, 0, len(catalog.ByKey))
+	for key := range catalog.ByKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]modelparamsEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, catalog.ByKey[key])
+	}
+	raw, err := json.Marshal(struct {
+		Models []modelparamsEntry `json:"models"`
+	}{Models: entries})
+	if err != nil {
+		return false
+	}
+	reparsed, err := parseModelparamsCatalog(raw)
+	return err == nil && reflect.DeepEqual(reparsed.ByKey, catalog.ByKey)
 }
 
 func (c *modelparamsCatalog) lookupSource(source metadataSource, id string) (modelparamsEntry, bool) {
@@ -102,7 +167,7 @@ func (c *modelparamsCatalog) lookupSource(source metadataSource, id string) (mod
 	}
 	lookup := func(model string) (modelparamsEntry, bool) {
 		key := source.Provider + "/" + strings.ToLower(model) + "/" + source.AuthType
-		entry, ok := c.byKey[key]
+		entry, ok := c.ByKey[key]
 		return entry, ok
 	}
 	if entry, ok := lookup(id); ok {

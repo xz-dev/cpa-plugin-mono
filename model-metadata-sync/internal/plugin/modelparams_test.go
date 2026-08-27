@@ -128,6 +128,28 @@ func TestModelparamsLookupUsesOnlyExactOrSinglePrefixIDs(t *testing.T) {
 	}
 }
 
+func TestModelparamsCatalogFailsClosedOnAmbiguity(t *testing.T) {
+	cases := map[string]string{
+		"folded wrapper":    `{"Models":[{"provider":"openai","model":"a"}]}`,
+		"duplicate wrapper": `{"models":[{"provider":"openai","model":"a"}],"Models":[]}`,
+		"invalid mixed":     `{"models":[{"provider":"openai","model":"a"},{"provider":"","model":"b"}]}`,
+		"duplicate entry":   `{"models":[{"provider":"openai","model":"a"},{"provider":"openai","model":"a"}]}`,
+		"folded entry":      `{"models":[{"Provider":"openai","model":"a"}]}`,
+		"duplicate path":    `{"models":[{"provider":"openai","model":"a","params":[{"path":"max_tokens"},{"path":"max_tokens"}]}]}`,
+		"folded parameter":  `{"models":[{"provider":"openai","model":"a","params":[{"Path":"max_tokens"}]}]}`,
+		"fractional range":  `{"models":[{"provider":"openai","model":"a","params":[{"path":"max_tokens","range":{"max":4.5}}]}]}`,
+		"non-string enum":   `{"models":[{"provider":"openai","model":"a","params":[{"path":"reasoning_effort","type":"enum","values":["low",1]}]}]}`,
+		"trailing JSON":     `{"models":[{"provider":"openai","model":"a"}]} []`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseModelparamsCatalog([]byte(raw)); err == nil {
+				t.Fatal("ambiguous modelparams catalog accepted")
+			}
+		})
+	}
+}
+
 func TestExtractSkipsThinkingTypeOnly(t *testing.T) {
 	got := extractThinkingLevels([]modelparamsParam{
 		{Path: "thinking.type", Group: "reasoning", Type: "enum", Values: []any{"disabled", "enabled"}},
