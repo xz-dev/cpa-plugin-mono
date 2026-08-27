@@ -9,13 +9,22 @@ import (
 type fakePlanner struct {
 	mu        sync.Mutex
 	calls     int
+	versions  []string
 	proposals [][]byte
+}
+
+func (p *fakePlanner) PlanWithProgress(ctx context.Context, operation Operation, snapshot ConfigSnapshot, settings Settings, progress func(RunState)) (CommitProposal, ErrorCode) {
+	if progress != nil {
+		progress(StateFetching)
+	}
+	return p.Plan(ctx, operation, snapshot, settings)
 }
 
 func (p *fakePlanner) Plan(_ context.Context, _ Operation, snapshot ConfigSnapshot, _ Settings) (CommitProposal, ErrorCode) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
+	p.versions = append(p.versions, snapshot.Version)
 	raw, _ := snapshot.Decode()
 	proposal := membershipProposal(raw)
 	if len(p.proposals) >= p.calls {
@@ -66,13 +75,15 @@ func TestWriterExecutorRetriesVersionConflictFromFreshSnapshot(t *testing.T) {
 	outcome := executor.ExecuteWithProgress(context.Background(), OperationAutoPull, settings, func(attempt int, state RunState) {
 		progress = append(progress, progressEvent{attempt: attempt, state: state})
 	})
-	if outcome.Code != "" || !outcome.Changed || planner.calls != 2 {
-		t.Fatalf("outcome=%+v calls=%d", outcome, planner.calls)
+	if outcome.Code != "" || !outcome.Changed || planner.calls != 2 || len(planner.versions) != 2 || planner.versions[0] == planner.versions[1] {
+		t.Fatalf("outcome=%+v calls=%d versions=%v", outcome, planner.calls, planner.versions)
 	}
 	want := []progressEvent{
 		{attempt: 1, state: StatePlanning},
+		{attempt: 1, state: StateFetching},
 		{attempt: 1, state: StateCommitting},
 		{attempt: 2, state: StatePlanning},
+		{attempt: 2, state: StateFetching},
 		{attempt: 2, state: StateCommitting},
 		{attempt: 2, state: StateWaiting},
 	}

@@ -202,45 +202,61 @@ func (s *Service) statusLocked() StatusResponse {
 	return response
 }
 
+func isConfigWriteOperation(op Operation) bool {
+	return op == OperationAutoPull || op == OperationMetadataSync
+}
+
 func (s *Service) enqueue(op Operation) (string, bool, ErrorCode) {
 	s.mu.Lock()
-	if op != OperationReconcile && s.blocker != nil {
-		blockingRunID, code := s.blocker.RunID, s.blocker.ErrorCode
-		s.mu.Unlock()
-		return blockingRunID, false, code
+	defer s.mu.Unlock()
+	return s.enqueueLocked(op)
+}
+
+func (s *Service) enqueueLocked(op Operation) (string, bool, ErrorCode) {
+	if isConfigWriteOperation(op) && s.blocker != nil {
+		return s.blocker.RunID, false, s.blocker.ErrorCode
 	}
 	if id := s.activeByOp[op]; id != "" {
-		s.mu.Unlock()
 		return id, true, ""
 	}
 	id, err := newOpaqueID()
 	if err != nil {
-		s.mu.Unlock()
 		return "", false, CodeNotImplemented
 	}
 	status := &RunStatus{RunID: id, Operation: op, State: StateQueued, Attempt: 0, QueuedAt: s.now(), InstanceID: s.instanceID, ReconfigureSeq: s.reconfigureSeq, ConfigSHA256: s.settings.ConfigSHA256}
 	s.statuses[id] = status
 	s.activeByOp[op] = id
-	item := job{runID: id, operation: op, settings: s.settings}
-	s.queue = append(s.queue, item)
+	s.queue = append(s.queue, job{runID: id, operation: op, settings: s.settings})
 	s.queueCond.Signal()
-	s.mu.Unlock()
 	return id, false, ""
+}
+
+func (s *Service) runnableJobIndexLocked() int {
+	for index, item := range s.queue {
+		if s.blocker == nil || !isConfigWriteOperation(item.operation) {
+			return index
+		}
+	}
+	return -1
 }
 
 func (s *Service) worker() {
 	defer close(s.done)
 	for {
 		s.mu.Lock()
-		for len(s.queue) == 0 && !s.isStoppedLocked() {
+		index := s.runnableJobIndexLocked()
+		for index < 0 && !s.isStoppedLocked() {
 			s.queueCond.Wait()
+			index = s.runnableJobIndexLocked()
 		}
 		if s.isStoppedLocked() {
 			s.mu.Unlock()
 			return
 		}
-		item := s.queue[0]
-		s.queue = s.queue[1:]
+		item := s.queue[index]
+		copy(s.queue[index:], s.queue[index+1:])
+		s.queue[len(s.queue)-1] = job{}
+		s.queue = s.queue[:len(s.queue)-1]
 		s.mu.Unlock()
 		s.updateRun(item.runID, func(status *RunStatus) {
 			status.Attempt = 1
@@ -311,6 +327,7 @@ func (s *Service) clearBlockLocked(retainUncertain bool) {
 	if blocked == nil {
 		return
 	}
+	s.queueCond.Broadcast()
 	if retainUncertain && blocked.State == StateUncertain {
 		s.retainCompletedLocked(blocked)
 		return
@@ -497,11 +514,11 @@ func (s *Service) scheduler() {
 func (s *Service) nextDeadline() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.blocker != nil {
-		return time.Time{}, false
-	}
 	var next time.Time
-	for _, deadline := range s.deadlines {
+	for operation, deadline := range s.deadlines {
+		if s.blocker != nil && isConfigWriteOperation(operation) {
+			continue
+		}
 		if next.IsZero() || deadline.Before(next) {
 			next = deadline
 		}
@@ -511,25 +528,24 @@ func (s *Service) nextDeadline() (time.Time, bool) {
 
 func (s *Service) fireExpired() {
 	now := s.now()
-	var operations []Operation
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for op, deadline := range s.deadlines {
-		if !deadline.After(now) {
-			operations = append(operations, op)
-			interval := intervalForOperation(s.settings, op)
-			if interval == 0 {
-				delete(s.deadlines, op)
-			} else {
-				s.deadlines[op] = deadline.Add(interval)
-				for !s.deadlines[op].After(now) {
-					s.deadlines[op] = s.deadlines[op].Add(interval)
-				}
-			}
+		if deadline.After(now) {
+			continue
 		}
-	}
-	s.mu.Unlock()
-	for _, op := range operations {
-		_, _, _ = s.enqueue(op)
+		if _, _, code := s.enqueueLocked(op); code != "" {
+			continue
+		}
+		interval := intervalForOperation(s.settings, op)
+		if interval == 0 {
+			delete(s.deadlines, op)
+			continue
+		}
+		s.deadlines[op] = deadline.Add(interval)
+		for !s.deadlines[op].After(now) {
+			s.deadlines[op] = s.deadlines[op].Add(interval)
+		}
 	}
 }
 

@@ -24,6 +24,79 @@ func (e *blockingExecutor) Execute(_ context.Context, _ Operation, settings Sett
 	return Outcome{Code: CodeNotImplemented}
 }
 
+type queuedBlockReconciler struct {
+	started       chan Operation
+	releaseFirst  chan struct{}
+	blockCode     ErrorCode
+	metadataCalls atomic.Int32
+}
+
+func (e *queuedBlockReconciler) Execute(_ context.Context, operation Operation, _ Settings) Outcome {
+	e.started <- operation
+	switch operation {
+	case OperationAutoPull:
+		<-e.releaseFirst
+		version := configVersion([]byte("blocked"))
+		return Outcome{State: StateUncertain, Code: e.blockCode, Version: version, Block: BlockRecord{Version: version}}
+	case OperationMetadataSync:
+		e.metadataCalls.Add(1)
+	}
+	return Outcome{State: StateSucceeded}
+}
+
+func (e *queuedBlockReconciler) ReconcileAndClear(_ context.Context, block BlockRecord, _ Settings, clear func(BlockRecord, string) bool) ReconcileResult {
+	e.started <- OperationReconcile
+	if !clear(block, block.Version) {
+		return ReconcileResult{Code: CodeReconcileFailed}
+	}
+	return ReconcileResult{Cleared: true, Version: block.Version}
+}
+
+func TestQueuedWritesWaitForEvidenceBasedReconcileWithoutBlockingReadJobs(t *testing.T) {
+	setValidSecrets(t)
+	for _, code := range []ErrorCode{CodePlannerStalled, CodePersistedRuntimeUncertain, CodeCommitVerificationFailed} {
+		t.Run(string(code), func(t *testing.T) {
+			executor := &queuedBlockReconciler{started: make(chan Operation, 8), releaseFirst: make(chan struct{}), blockCode: code}
+			s := New(executor)
+			defer s.Shutdown()
+			if err := s.Configure(validConfigYAML()); err != nil {
+				t.Fatal(err)
+			}
+			s.ClearBlockForReconcileProof()
+
+			autoID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil)))
+			if operation := <-executor.started; operation != OperationAutoPull {
+				t.Fatalf("first operation=%s", operation)
+			}
+			metadataID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runMetadataPath, nil)))
+			modelInfoID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, modelInfoPath, nil)))
+			close(executor.releaseFirst)
+			waitForState(t, s, autoID, StateUncertain)
+
+			if operation := <-executor.started; operation != OperationModelInfo {
+				t.Fatalf("operation past retained write=%s", operation)
+			}
+			waitForState(t, s, modelInfoID, StateSucceeded)
+			if executor.metadataCalls.Load() != 0 {
+				t.Fatal("queued metadata executed while Writer was blocked")
+			}
+
+			reconcileID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, reconcilePath, nil)))
+			if operation := <-executor.started; operation != OperationReconcile {
+				t.Fatalf("operation past retained write=%s", operation)
+			}
+			waitForState(t, s, reconcileID, StateSucceeded)
+			if operation := <-executor.started; operation != OperationMetadataSync {
+				t.Fatalf("post-reconcile operation=%s", operation)
+			}
+			waitForState(t, s, metadataID, StateSucceeded)
+			if executor.metadataCalls.Load() != 1 || s.Status().WriterBlocked {
+				t.Fatalf("metadata calls=%d status=%+v", executor.metadataCalls.Load(), s.Status())
+			}
+		})
+	}
+}
+
 func TestManagementRegistersExactFoundationRoutes(t *testing.T) {
 	s := New(nil)
 	defer s.Shutdown()
@@ -84,6 +157,10 @@ func TestStartupBlocksWritesButAdmitsReconcile(t *testing.T) {
 	if blocked.StatusCode != http.StatusConflict || !jsonBodyHasCode(blocked.Body, CodeWriterBlocked) {
 		t.Fatalf("blocked=%d %s", blocked.StatusCode, blocked.Body)
 	}
+	modelInfo := s.HandleManagement(managementRequest(http.MethodPost, modelInfoPath, nil))
+	if modelInfo.StatusCode != http.StatusAccepted {
+		t.Fatalf("read-only model-info blocked=%d %s", modelInfo.StatusCode, modelInfo.Body)
+	}
 	reconcile := s.HandleManagement(managementRequest(http.MethodPost, reconcilePath, nil))
 	if reconcile.StatusCode != http.StatusAccepted {
 		t.Fatalf("reconcile=%d %s", reconcile.StatusCode, reconcile.Body)
@@ -91,6 +168,34 @@ func TestStartupBlocksWritesButAdmitsReconcile(t *testing.T) {
 	var body triggerResponse
 	if err := json.Unmarshal(reconcile.Body, &body); err != nil || body.RunID == "" {
 		t.Fatalf("body=%s err=%v", reconcile.Body, err)
+	}
+}
+
+func TestModelInfoAdmissionIgnoresEveryWriteBlockKind(t *testing.T) {
+	setValidSecrets(t)
+	for _, code := range []ErrorCode{CodeStartupReconcileRequired, CodePlannerStalled, CodePersistedRuntimeUncertain, CodeCommitVerificationFailed} {
+		t.Run(string(code), func(t *testing.T) {
+			s := New(ExecutorFunc(func(_ context.Context, operation Operation, _ Settings) Outcome {
+				if operation != OperationModelInfo {
+					t.Fatalf("unexpected operation %s", operation)
+				}
+				return Outcome{State: StateSucceeded}
+			}))
+			defer s.Shutdown()
+			if err := s.Configure(validConfigYAML()); err != nil {
+				t.Fatal(err)
+			}
+			s.blockForTest(code)
+			response := s.HandleManagement(managementRequest(http.MethodPost, modelInfoPath, nil))
+			if response.StatusCode != http.StatusAccepted {
+				t.Fatalf("model-info=%d %s", response.StatusCode, response.Body)
+			}
+			waitForState(t, s, acceptedRunID(t, response), StateSucceeded)
+			blocked := s.HandleManagement(managementRequest(http.MethodPost, runMetadataPath, nil))
+			if blocked.StatusCode != http.StatusConflict || !jsonBodyHasCode(blocked.Body, CodeWriterBlocked) {
+				t.Fatalf("write=%d %s", blocked.StatusCode, blocked.Body)
+			}
+		})
 	}
 }
 
@@ -332,6 +437,99 @@ func TestDeadlinesPreserveAbsoluteTimeAndResetOnlyChangedOwner(t *testing.T) {
 	}
 }
 
+func TestTimerAdmissionAndDeadlineAdvanceAreAtomicWithNewBlocker(t *testing.T) {
+	setValidSecrets(t)
+	for iteration := 0; iteration < 50; iteration++ {
+		var unix atomic.Int64
+		unix.Store(1000)
+		now := func() time.Time { return time.Unix(unix.Load(), 0) }
+		executor := &queuedBlockReconciler{started: make(chan Operation, 8), releaseFirst: make(chan struct{}), blockCode: CodePlannerStalled}
+		s := New(executor, WithClock(now))
+		if err := s.Configure(validConfigYAML()); err != nil {
+			s.Shutdown()
+			t.Fatal(err)
+		}
+		s.ClearBlockForReconcileProof()
+		autoID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil)))
+		if operation := <-executor.started; operation != OperationAutoPull {
+			s.Shutdown()
+			t.Fatalf("first operation=%s", operation)
+		}
+		withoutAutoTimer := []byte(replaceLine(string(validConfigYAML()), "auto_pull_interval: 5m", "auto_pull_interval: 0s"))
+		if err := s.Configure(withoutAutoTimer); err != nil {
+			s.Shutdown()
+			t.Fatal(err)
+		}
+		deadlineBefore := s.deadlinesForTest()[OperationMetadataSync]
+		unix.Store(5000)
+
+		start := make(chan struct{})
+		var contenders sync.WaitGroup
+		contenders.Add(2)
+		go func() {
+			defer contenders.Done()
+			<-start
+			close(executor.releaseFirst)
+		}()
+		go func() {
+			defer contenders.Done()
+			<-start
+			s.fireExpired()
+		}()
+		close(start)
+		contenders.Wait()
+		waitForState(t, s, autoID, StateUncertain)
+
+		s.mu.Lock()
+		metadataID := s.activeByOp[OperationMetadataSync]
+		deadlineAfter := s.deadlines[OperationMetadataSync]
+		s.mu.Unlock()
+		if metadataID == "" && !deadlineAfter.Equal(deadlineBefore) {
+			s.Shutdown()
+			t.Fatalf("iteration %d lost blocked deadline: before=%v after=%v", iteration, deadlineBefore, deadlineAfter)
+		}
+		if metadataID != "" && !deadlineAfter.After(now()) {
+			s.Shutdown()
+			t.Fatalf("iteration %d admitted timer without advancing deadline: %v", iteration, deadlineAfter)
+		}
+
+		reconcileID := acceptedRunID(t, s.HandleManagement(managementRequest(http.MethodPost, reconcilePath, nil)))
+		if operation := <-executor.started; operation != OperationReconcile {
+			s.Shutdown()
+			t.Fatalf("operation=%s", operation)
+		}
+		waitForState(t, s, reconcileID, StateSucceeded)
+		select {
+		case operation := <-executor.started:
+			if operation != OperationMetadataSync {
+				s.Shutdown()
+				t.Fatalf("post-reconcile operation=%s", operation)
+			}
+		case <-time.After(time.Second):
+			s.Shutdown()
+			t.Fatal("retained timer did not run after reconcile")
+		}
+		if metadataID == "" {
+			for _, status := range s.statusWithRuns().Runs {
+				if status.Operation == OperationMetadataSync {
+					metadataID = status.RunID
+					break
+				}
+			}
+		}
+		if metadataID == "" {
+			s.Shutdown()
+			t.Fatal("metadata status missing after timer run")
+		}
+		waitForState(t, s, metadataID, StateSucceeded)
+		if executor.metadataCalls.Load() != 1 {
+			s.Shutdown()
+			t.Fatalf("metadata calls=%d", executor.metadataCalls.Load())
+		}
+		s.Shutdown()
+	}
+}
+
 func TestSchedulerAdmitsRetainedExpiredDeadlinesOnceAfterUnblock(t *testing.T) {
 	setValidSecrets(t)
 	var unix atomic.Int64
@@ -356,6 +554,15 @@ func TestSchedulerAdmitsRetainedExpiredDeadlinesOnceAfterUnblock(t *testing.T) {
 	}
 
 	unix.Store(1000 + int64((2*time.Hour)/time.Second))
+	blockedDeadlines := s.deadlinesForTest()
+	s.fireExpired()
+	afterBlockedFire := s.deadlinesForTest()
+	if !afterBlockedFire[OperationAutoPull].Equal(blockedDeadlines[OperationAutoPull]) || !afterBlockedFire[OperationMetadataSync].Equal(blockedDeadlines[OperationMetadataSync]) {
+		t.Fatalf("blocked write deadlines advanced: before=%v after=%v", blockedDeadlines, afterBlockedFire)
+	}
+	if got := s.activeRunIDsForTest(); got[OperationAutoPull] != "" || got[OperationMetadataSync] != "" {
+		t.Fatalf("blocked write owners admitted: %+v", got)
+	}
 	s.ClearBlockForReconcileProof()
 	select {
 	case <-started:
@@ -402,6 +609,49 @@ func TestSchedulerAdmitsRetainedExpiredDeadlinesOnceAfterUnblock(t *testing.T) {
 	releaseAll()
 	waitForState(t, s, autoID, StateFailed)
 	waitForState(t, s, metadataID, StateFailed)
+}
+
+func TestBlockedSchedulerRunsModelInfoAndRetainsWriteDeadline(t *testing.T) {
+	setValidSecrets(t)
+	var unix atomic.Int64
+	unix.Store(1000)
+	now := func() time.Time { return time.Unix(unix.Load(), 0) }
+	started := make(chan Operation, 4)
+	s := New(ExecutorFunc(func(_ context.Context, operation Operation, _ Settings) Outcome {
+		started <- operation
+		return Outcome{State: StateSucceeded}
+	}), WithClock(now))
+	defer s.Shutdown()
+	config := []byte(replaceLine(string(validConfigYAML()), "model_info_interval: 0s", "model_info_interval: 5m"))
+	if err := s.Configure(config); err != nil {
+		t.Fatal(err)
+	}
+	unix.Store(1400)
+	s.fireExpired()
+	select {
+	case operation := <-started:
+		if operation != OperationModelInfo {
+			t.Fatalf("blocked scheduler started %s", operation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked scheduler did not run read-only model-info")
+	}
+	deadlines := s.deadlinesForTest()
+	if want := time.Unix(1300, 0); !deadlines[OperationAutoPull].Equal(want) {
+		t.Fatalf("blocked write deadline=%v want=%v", deadlines[OperationAutoPull], want)
+	}
+	if !deadlines[OperationModelInfo].After(now()) {
+		t.Fatalf("model-info deadline did not advance: %v", deadlines[OperationModelInfo])
+	}
+	s.ClearBlockForReconcileProof()
+	select {
+	case operation := <-started:
+		if operation != OperationAutoPull {
+			t.Fatalf("unblock started %s before overdue write", operation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unblock did not admit retained overdue write")
+	}
 }
 
 type reportingExecutor struct{}

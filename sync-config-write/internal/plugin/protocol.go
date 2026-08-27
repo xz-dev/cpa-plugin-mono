@@ -33,17 +33,25 @@ const (
 type ErrorCode string
 
 const (
-	CodeNotImplemented            ErrorCode = "not_yet_implemented"
-	CodeInvalidRequest            ErrorCode = "invalid_request"
-	CodeVersionConflict           ErrorCode = "version_conflict"
-	CodeCommitVerificationFailed  ErrorCode = "commit_verification_failed"
-	CodePersistedRuntimeUncertain ErrorCode = "persisted_runtime_uncertain"
-	CodeInvalidConfig             ErrorCode = "invalid_config"
-	CodeCoreUnavailable           ErrorCode = "core_unavailable"
-	CodeWriterBlocked             ErrorCode = "writer_blocked"
-	CodeStartupReconcileRequired  ErrorCode = "startup_reconcile_required"
-	CodePlannerStalled            ErrorCode = "planner_stalled"
-	CodeReconcileFailed           ErrorCode = "reconcile_failed"
+	CodeNotImplemented                ErrorCode = "not_yet_implemented"
+	CodeInvalidRequest                ErrorCode = "invalid_request"
+	CodeVersionConflict               ErrorCode = "version_conflict"
+	CodeCommitVerificationFailed      ErrorCode = "commit_verification_failed"
+	CodePersistedRuntimeUncertain     ErrorCode = "persisted_runtime_uncertain"
+	CodeInvalidConfig                 ErrorCode = "invalid_config"
+	CodeProviderCredentialUnavailable ErrorCode = "provider_credential_unavailable"
+	CodeProviderFetchInvalid          ErrorCode = "provider_fetch_invalid"
+	CodeProviderFetchFailed           ErrorCode = "provider_fetch_failed"
+	CodeProviderCatalogTooLarge       ErrorCode = "provider_catalog_too_large"
+	CodeCatalogKeyUnavailable         ErrorCode = "catalog_key_unavailable"
+	CodeCatalogInvalid                ErrorCode = "catalog_invalid"
+	CodeCatalogTooLarge               ErrorCode = "catalog_too_large"
+	CodeCoreUnavailable               ErrorCode = "core_unavailable"
+	CodeLoopbackTimeout               ErrorCode = "loopback_timeout"
+	CodeWriterBlocked                 ErrorCode = "writer_blocked"
+	CodeStartupReconcileRequired      ErrorCode = "startup_reconcile_required"
+	CodePlannerStalled                ErrorCode = "planner_stalled"
+	CodeReconcileFailed               ErrorCode = "reconcile_failed"
 )
 
 type Outcome struct {
