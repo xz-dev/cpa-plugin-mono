@@ -1,67 +1,43 @@
 # auto-pull-models
 
-CPA membership-only plugin for OpenAI-compatible channels.
+CLIProxyAPI native plugin that plans OpenAI-compatible model membership changes. It is a pure worker for `sync-config-write`: it never reads or writes CPA files, calls CPA management APIs, or performs provider HTTP.
 
-Plugin ID/artifact: `auto-pull-models` / `auto-pull-models.so`.
+## Configuration
 
-## Ownership
-
-- Select channel by exact trimmed `name` + normalized `base_url`.
-- Fetch catalog through core `model-channels/catalog` profile `openai_models`, fenced by current channel revision.
-- Optional Codex catalog query `client_version=1.0.0`.
-- Apply include/exclude Go RE2 filters.
-- Reconcile exact upstream model names through atomic core membership operation.
-- Preserve existing aliases when configured.
-- Expose status, JSON, channels, preview, sync, WebUI, independent timer.
-
-No metadata enrichment, external metadata sources, direct config-file writes, channel credentials, caller-selected upstream URLs, or caller-supplied headers.
-
-## CPA plugin config
+Configuration comes only from `plugins.configs.auto-pull-models`:
 
 ```yaml
-plugins:
-  enabled: true
-  dir: plugins
-  configs:
-    auto-pull-models:
-      enabled: true
-      config_file: plugins/auto-pull-models/config.json
+worker_token_env: CPA_WRITER_WORKER_TOKEN
+sync_epoch: initial
+channels:
+  - enabled: true
+    selector:
+      name: OpenRouter
+      base_url: https://openrouter.ai/api/v1
+    mode: exclude
+    patterns:
+      - '^free/'
 ```
 
-See [`config.example.json`](./config.example.json). Important fields:
+`worker_token_env` must resolve to the same non-empty process environment value configured for Writer. Selectors use exact trimmed channel names and canonical HTTPS base URLs. `mode` is `include` or `exclude`; patterns are Go regular expressions. One Writer run processes every enabled configured selector in order.
 
-- `interval`: Go duration; `0` means manual only.
-- `management_base_url`, `management_key_file`, `management_key_env`: management access.
-- `keep_existing_aliases`: core preserves aliases for retained upstream names.
-- `channels[].selector`: exact `{name, base_url}` composite selector. Name-only binding is rejected.
-- `channels[].mode`: `include` or `exclude`.
-- `channels[].patterns`: regex list. Empty include keeps none; empty exclude keeps all.
-- `channels[].codex_manifest`: adds `client_version=1.0.0` to core-owned catalog fetch.
+Legacy `config_file`, intervals, management credentials, `keep_existing_aliases`, `codex_manifest`, JSON/UI routes, and direct sync/preview routes are intentionally unsupported.
 
-## Combined-config migration
+## Private Writer routes
 
-Old `providers` map, `upstream_meta`, `metadata_sources`, overrides, `modelparams_url`, `modelsdev_url`, `write_mode`, and `config_path` are rejected with a clear schema error. Migration:
+- `POST /v0/management/plugins/auto-pull-models/plan`
+- `GET /v0/management/plugins/auto-pull-models/writer-status`
 
-1. Replace provider-name map with `channels[]` and copy exact current channel `name` + normalized `base_url`.
-2. Keep filtering and `codex_manifest` here.
-3. Move metadata settings into independent `model-metadata-sync` config.
-4. Preview both plugins before enabling timers. Ambiguous selectors fail closed.
+Both require `X-Sync-Config-Writer-Token`. Users trigger Writer's `/run/auto-pull-models` route instead of calling these routes.
 
-## Management routes
+Planner requests use exact case-sensitive JSON with base64-framed full config bytes. Each continuation is bound to one exact snapshot, configuration generation, and planning attempt, and each fetch receipt is accepted once; a new attempt or reconfigure invalidates the prior continuation. Provider credentials are resolved only through stock `host.auth.list`, `host.auth.get_runtime`, and `host.auth.get`; only one active file-backed identity matching the selected channel is accepted. Planner returns a secret-free `$TOKEN$` fetch descriptor. Writer performs stock management `/api-call`, then returns only bounded provider body bytes for mandatory post-fetch identity revalidation.
 
-- `GET /v0/management/plugins/auto-pull-models/status`
-- `GET|PUT /v0/management/plugins/auto-pull-models/json`
-- `GET /v0/management/plugins/auto-pull-models/channels`
-- `POST /v0/management/plugins/auto-pull-models/preview`
-- `POST /v0/management/plugins/auto-pull-models/sync`
+Retained models preserve complete YAML mappings, aliases, metadata, order-relative comments, and unknown fields. New models contain only `name`; excluded models are removed; upstream order wins. Planner never enriches metadata or mutates `plugins.*`.
 
-`channel=<selector-key>` scopes preview/sync; legacy `provider=<name>` remains only as UI query convenience and still resolves against configured composite selector.
-
-## Build
+## Build and test
 
 ```bash
-make test
-make build
+env -u GOROOT go test ./...
+env -u GOROOT go test -race ./...
+make build-local
 ```
-
-Install `build/plugins/linux/amd64/auto-pull-models.so`, then restart or reload CPA plugin.

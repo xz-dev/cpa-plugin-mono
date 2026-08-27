@@ -3,52 +3,74 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
+	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/xz-dev/cpa-plugin-mono/auto-pull-models/internal/plugin"
 )
 
-type hostHTTPRequest struct {
-	Method  string              `json:"method"`
-	URL     string              `json:"url"`
-	Headers map[string][]string `json:"headers,omitempty"`
-	Body    []byte              `json:"body,omitempty"`
+type hostAuth struct{}
+
+type authListResponse struct {
+	Files []pluginapi.HostAuthFileEntry `json:"files"`
 }
 
-type hostHTTPResponse struct {
-	StatusCode    int                 `json:"status_code"`
-	Headers       map[string][]string `json:"headers"`
-	Body          []byte              `json:"body"`
-	StatusCodeAlt int                 `json:"StatusCode"`
-	HeadersAlt    map[string][]string `json:"Headers"`
-	BodyAlt       []byte              `json:"Body"`
-}
-
-type hostTransport struct{}
-
-func (hostTransport) Do(method, url string, headers http.Header, body []byte) (int, []byte, error) {
-	raw, err := doHostHTTP(hostHTTPRequest{
-		Method:  method,
-		URL:     url,
-		Headers: headers,
-		Body:    body,
-	})
+func (hostAuth) List() ([]plugin.AuthEntry, error) {
+	raw, err := doHostCall(pluginabi.MethodHostAuthList, map[string]any{})
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
-	var resp hostHTTPResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return 0, nil, fmt.Errorf("decode host HTTP response: %w", err)
+	var response authListResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode host auth list")
 	}
-	status := resp.StatusCode
-	if status == 0 {
-		status = resp.StatusCodeAlt
+	result := make([]plugin.AuthEntry, 0, len(response.Files))
+	for _, entry := range response.Files {
+		result = append(result, fromHostAuthEntry(entry))
 	}
-	out := resp.Body
-	if len(out) == 0 {
-		out = resp.BodyAlt
-	}
-	return status, out, nil
+	return result, nil
 }
 
-var _ plugin.Transport = hostTransport{}
+func (hostAuth) GetRuntime(authIndex string) (plugin.AuthEntry, error) {
+	raw, err := doHostCall(pluginabi.MethodHostAuthGetRuntime, pluginapi.HostAuthGetRequest{AuthIndex: authIndex})
+	if err != nil {
+		return plugin.AuthEntry{}, err
+	}
+	var response pluginapi.HostAuthGetRuntimeResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return plugin.AuthEntry{}, fmt.Errorf("decode host auth runtime")
+	}
+	return fromHostAuthEntry(response.Auth), nil
+}
+
+func (hostAuth) Get(authIndex string) (plugin.AuthPhysical, error) {
+	raw, err := doHostCall(pluginabi.MethodHostAuthGet, pluginapi.HostAuthGetRequest{AuthIndex: authIndex})
+	if err != nil {
+		return plugin.AuthPhysical{}, err
+	}
+	var response pluginapi.HostAuthGetResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return plugin.AuthPhysical{}, fmt.Errorf("decode host auth file")
+	}
+	return plugin.AuthPhysical{AuthIndex: response.AuthIndex, Path: response.Path, JSON: append([]byte(nil), response.JSON...)}, nil
+}
+
+func fromHostAuthEntry(entry pluginapi.HostAuthFileEntry) plugin.AuthEntry {
+	provider := strings.TrimSpace(entry.Provider)
+	if provider == "" {
+		provider = strings.TrimSpace(entry.Type)
+	}
+	return plugin.AuthEntry{
+		AuthIndex:   entry.AuthIndex,
+		Provider:    provider,
+		Status:      entry.Status,
+		Disabled:    entry.Disabled,
+		Unavailable: entry.Unavailable,
+		RuntimeOnly: entry.RuntimeOnly,
+		Source:      entry.Source,
+		Path:        entry.Path,
+	}
+}
+
+var _ plugin.AuthHost = hostAuth{}

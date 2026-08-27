@@ -76,7 +76,7 @@ func pluginRegistration() registration {
 			Author:           "xz-dev",
 			GitHubRepository: "https://github.com/xz-dev/cpa-plugin-mono",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "config_file", Type: pluginapi.ConfigFieldTypeString, Description: "Path to auto-pull-models JSON config. Default plugins/auto-pull-models/config.json"},
+				{Name: "worker_token_env", Type: pluginapi.ConfigFieldTypeString, Description: "Environment variable containing the shared Writer coordination token"},
 			},
 		},
 		Capabilities: registrationCapability{ManagementAPI: true},

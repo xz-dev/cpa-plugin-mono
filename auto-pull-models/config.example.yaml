@@ -1,0 +1,10 @@
+worker_token_env: CPA_WRITER_WORKER_TOKEN
+sync_epoch: initial
+channels:
+  - enabled: true
+    selector:
+      name: OpenRouter
+      base_url: https://openrouter.ai/api/v1
+    mode: exclude
+    patterns:
+      - '^free/'
