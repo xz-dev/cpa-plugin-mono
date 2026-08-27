@@ -127,6 +127,10 @@ func (r fetchRelay) fetch(ctx context.Context, descriptor FetchDescriptor, setti
 }
 
 func validateFetchDescriptor(descriptor FetchDescriptor, snapshot ConfigSnapshot) error {
+	return validateFetchDescriptorForOperation(descriptor, snapshot, OperationAutoPull)
+}
+
+func validateFetchDescriptorForOperation(descriptor FetchDescriptor, snapshot ConfigSnapshot, operation Operation) error {
 	if descriptor.Method != http.MethodGet || descriptor.RequestID == "" || len(descriptor.RequestID) > 128 || strings.TrimSpace(descriptor.RequestID) != descriptor.RequestID || hasControl(descriptor.RequestID) {
 		return fmt.Errorf("invalid request")
 	}
@@ -187,7 +191,7 @@ func validateFetchDescriptor(descriptor FetchDescriptor, snapshot ConfigSnapshot
 	}
 	switch descriptor.Kind {
 	case "openai_models":
-		return validateOpenAIFetch(descriptor, u, raw)
+		return validateOpenAIFetch(descriptor, u, raw, operation)
 	case "claude_models":
 		return validateClaudeFetch(descriptor, u, raw)
 	case "modelparams":
@@ -205,14 +209,21 @@ func validateFetchDescriptor(descriptor FetchDescriptor, snapshot ConfigSnapshot
 	}
 }
 
-func validateOpenAIFetch(descriptor FetchDescriptor, u *url.URL, raw []byte) error {
+func validateOpenAIFetch(descriptor FetchDescriptor, u *url.URL, raw []byte, operation Operation) error {
 	selector := *descriptor.Selector
 	if selector.ChannelName == "" || selector.BaseURL == "" || selector.Prefix != "" || selector.ConfigIndex != nil {
 		return fmt.Errorf("invalid selector")
 	}
 	base, err := normalizeHTTPSBaseURL(selector.BaseURL)
-	if err != nil || selector.ChannelName != strings.TrimSpace(selector.ChannelName) || selector.BaseURL != base || descriptor.URL != base+"/models" || u.RawQuery != "" {
+	if err != nil || selector.ChannelName != strings.TrimSpace(selector.ChannelName) || selector.BaseURL != base {
 		return fmt.Errorf("invalid catalog url")
+	}
+	catalogURL := base + "/models"
+	if descriptor.URL != catalogURL || u.RawQuery != "" {
+		codexURL := catalogURL + "?client_version=1.0.0"
+		if operation != OperationMetadataSync || descriptor.URL != codexURL || u.RawQuery != "client_version=1.0.0" {
+			return fmt.Errorf("invalid catalog url")
+		}
 	}
 	root, err := parseOwnedDocument(raw)
 	if err != nil {

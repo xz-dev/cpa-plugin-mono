@@ -56,7 +56,7 @@ func (p *HTTPPlanner) PlanWithProgress(ctx context.Context, operation Operation,
 			return CommitProposal{}, CodeProviderFetchInvalid
 		}
 		descriptor := *envelope.NextFetch
-		if err := validateFetchDescriptor(descriptor, snapshot); err != nil {
+		if err := validateFetchDescriptorForOperation(descriptor, snapshot, operation); err != nil {
 			return CommitProposal{}, CodeProviderFetchInvalid
 		}
 		cursorKey := claudeCursorProgressionKey(descriptor)

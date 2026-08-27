@@ -43,6 +43,79 @@ func validOpenAIDescriptor() FetchDescriptor {
 	}
 }
 
+func TestOpenAICodexManifestQueryIsMetadataOnlyAndExact(t *testing.T) {
+	snapshot, _ := relaySnapshot()
+	descriptor := validOpenAIDescriptor()
+	descriptor.URL += "?client_version=1.0.0"
+	if err := validateFetchDescriptorForOperation(descriptor, snapshot, OperationMetadataSync); err != nil {
+		t.Fatalf("metadata Codex manifest rejected: %v", err)
+	}
+	if err := validateFetchDescriptorForOperation(descriptor, snapshot, OperationAutoPull); err == nil {
+		t.Fatal("auto-pull accepted metadata-only Codex manifest query")
+	}
+	for _, rawQuery := range []string{
+		"client_version=1.0.1",
+		"client_version=1.0.0&extra=true",
+		"CLIENT_VERSION=1.0.0",
+		"client_version=1%2E0%2E0",
+		"client_version=",
+	} {
+		descriptor.URL = "https://provider.example/v1/models?" + rawQuery
+		if err := validateFetchDescriptorForOperation(descriptor, snapshot, OperationMetadataSync); err == nil {
+			t.Fatalf("metadata accepted query %q", rawQuery)
+		}
+	}
+	descriptor.URL = "https://provider.example/v1/models"
+	if err := validateFetchDescriptorForOperation(descriptor, snapshot, OperationMetadataSync); err != nil {
+		t.Fatalf("ordinary metadata catalog rejected: %v", err)
+	}
+}
+
+func TestHTTPPlannerRelaysCodexManifestOnlyForMetadataOperation(t *testing.T) {
+	snapshot, proposed := relaySnapshot()
+	descriptor := validOpenAIDescriptor()
+	descriptor.URL += "?client_version=1.0.0"
+	apiCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case plannerPaths[OperationAutoPull], plannerPaths[OperationMetadataSync]:
+			var request plannerRequest
+			if err := decodeStrictJSON(r.Body, 40<<20, &request); err != nil {
+				t.Errorf("planner request: %v", err)
+			}
+			if request.FetchResult == nil {
+				_ = json.NewEncoder(w).Encode(CommitProposal{BaseVersion: snapshot.Version, NextFetch: ptrDescriptor(descriptor)})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(ProposalFromBytes(snapshot.Version, proposed))
+		case apiCallPath:
+			apiCalls++
+			var call apiCallRequest
+			if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
+				t.Fatal(err)
+			}
+			if call.URL != descriptor.URL {
+				t.Errorf("relay URL=%q", call.URL)
+			}
+			_ = json.NewEncoder(w).Encode(apiCallResponse{StatusCode: http.StatusOK, Body: `{"data":[{"id":"gpt"}]}`})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	settings := Settings{CoreOrigin: server.URL, ManagementKey: "management-secret", WorkerToken: "worker-secret"}
+	planner := NewHTTPPlanner(NewLoopbackClient())
+	if _, code := planner.Plan(context.Background(), OperationMetadataSync, snapshot, settings); code != "" {
+		t.Fatalf("metadata code=%s", code)
+	}
+	if _, code := planner.Plan(context.Background(), OperationAutoPull, snapshot, settings); code != CodeProviderFetchInvalid {
+		t.Fatalf("auto-pull code=%s", code)
+	}
+	if apiCalls != 1 {
+		t.Fatalf("api calls=%d", apiCalls)
+	}
+}
+
 func TestHTTPPlannerRelaysExactAPICallAndOnlyBodyToContinuation(t *testing.T) {
 	snapshot, proposed := relaySnapshot()
 	providerBody := []byte{0, '<', '&', 0xc3, 0xa9}
