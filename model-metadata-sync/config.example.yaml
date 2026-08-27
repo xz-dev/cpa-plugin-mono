@@ -1,0 +1,23 @@
+worker_token_env: CPA_WRITER_WORKER_TOKEN
+channels:
+  - enabled: true
+    kind: openai-compatibility
+    selector:
+      name: Example OpenAI-compatible
+      base_url: https://provider.example/v1
+    upstream_meta: true
+    codex_manifest: true
+    metadata_sources:
+      - modelparams.dev/openai/subscription
+      - models.dev/openai
+    overrides:
+      gpt-example:
+        max_context_length: 256000
+        max_input_tokens: 240000
+  - enabled: true
+    kind: claude
+    selector:
+      config_index: 0
+      base_url: https://api.anthropic.com
+      prefix: anthropic
+    upstream_meta: true
