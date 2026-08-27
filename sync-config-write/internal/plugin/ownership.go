@@ -152,7 +152,6 @@ func compareMembershipRoot(base, proposed *yaml.Node) (bool, error) {
 	if !sameNodeShell(base, proposed) || len(base.Content) != len(proposed.Content) {
 		return false, fmt.Errorf("root config changed")
 	}
-	changedProviders := 0
 	ownedChanged := false
 	for i := 0; i < len(base.Content); i += 2 {
 		baseKey, proposedKey := base.Content[i], proposed.Content[i]
@@ -165,36 +164,28 @@ func compareMembershipRoot(base, proposed *yaml.Node) (bool, error) {
 			}
 			continue
 		}
-		count, changed, err := compareMembershipProviders(base.Content[i+1], proposed.Content[i+1])
+		changed, err := compareMembershipProviders(base.Content[i+1], proposed.Content[i+1])
 		if err != nil {
 			return false, err
 		}
-		changedProviders += count
 		ownedChanged = ownedChanged || changed
-	}
-	if changedProviders > 1 {
-		return false, fmt.Errorf("multiple model sequences changed")
 	}
 	return ownedChanged, nil
 }
 
-func compareMembershipProviders(base, proposed *yaml.Node) (int, bool, error) {
+func compareMembershipProviders(base, proposed *yaml.Node) (bool, error) {
 	if !sameNodeShell(base, proposed) || base.Kind != yaml.SequenceNode || len(base.Content) != len(proposed.Content) {
-		return 0, false, fmt.Errorf("provider membership changed")
+		return false, fmt.Errorf("provider membership changed")
 	}
-	changedProviders := 0
 	ownedChanged := false
 	for i := range base.Content {
 		changed, err := compareMembershipProvider(base.Content[i], proposed.Content[i])
 		if err != nil {
-			return 0, false, err
+			return false, err
 		}
-		if changed {
-			changedProviders++
-			ownedChanged = true
-		}
+		ownedChanged = ownedChanged || changed
 	}
-	return changedProviders, ownedChanged, nil
+	return ownedChanged, nil
 }
 
 func compareMembershipProvider(base, proposed *yaml.Node) (bool, error) {

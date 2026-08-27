@@ -55,6 +55,7 @@ claude-api-key:
 `
 
 func TestMembershipOwnershipAllowedAndForbiddenMatrix(t *testing.T) {
+	multipleProviders := strings.Replace(strings.Replace(ownershipBaseYAML, "      - name: remove\n        alias: removed-alias\n", "", 1), "      - name: untouched\n        alias: untouched-alias", "      - name: second-new", 1)
 	allowed := map[string]string{
 		"remove reorder and add minimal": strings.Replace(ownershipBaseYAML, `      - name: keep
         alias: kept-alias
@@ -64,6 +65,7 @@ func TestMembershipOwnershipAllowedAndForbiddenMatrix(t *testing.T) {
       - name: keep
         alias: kept-alias
         max-context-length: 100`, 1),
+		"multiple configured providers": multipleProviders,
 	}
 	for name, proposed := range allowed {
 		t.Run(name, func(t *testing.T) {
@@ -75,13 +77,13 @@ func TestMembershipOwnershipAllowedAndForbiddenMatrix(t *testing.T) {
 	}
 
 	for name, proposed := range map[string]string{
-		"retained metadata": strings.Replace(ownershipBaseYAML, "max-context-length: 100", "max-context-length: 101", 1),
+		"retained metadata":                strings.Replace(ownershipBaseYAML, "max-context-length: 100", "max-context-length: 101", 1),
+		"multiple providers plus metadata": strings.Replace(multipleProviders, "max-context-length: 100", "max-context-length: 101", 1),
 		"new model alias": strings.Replace(ownershipBaseYAML, `      - name: remove
         alias: removed-alias`, `      - name: remove
         alias: removed-alias
       - name: new-model
         alias: forbidden`, 1),
-		"two channels":      strings.Replace(strings.Replace(ownershipBaseYAML, "      - name: remove\n        alias: removed-alias\n", "", 1), "      - name: untouched\n        alias: untouched-alias\n", "", 1),
 		"root api key":      strings.Replace(ownershipBaseYAML, "root-secret", "changed-secret", 1),
 		"plugin topology":   strings.Replace(ownershipBaseYAML, "dir: plugins", "dir: elsewhere", 1),
 		"plugin artifact":   strings.Replace(ownershipBaseYAML, "priority: 2", "priority: 9", 1),
