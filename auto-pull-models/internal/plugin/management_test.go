@@ -34,6 +34,27 @@ func managementRequest(method, path, token string, body []byte) pluginapi.Manage
 	return pluginapi.ManagementRequest{Method: method, Path: path, Headers: headers, Body: body}
 }
 
+func TestConfigYAMLAcceptsCoreNormalizedLifecycleAndOpaqueStore(t *testing.T) {
+	t.Setenv("TEST_WRITER_TOKEN", "worker-secret")
+	raw := append([]byte(`enabled: true
+priority: 7
+store:
+  version: 0.1.0
+  manifest:
+    linux:
+      amd64:
+        sha256: harmless-diagnostic-value
+`), validConfigYAML()...)
+	cfg, err := parseConfig(raw)
+	if err != nil {
+		t.Fatalf("Core-normalized ConfigYAML must be accepted: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	if cfg.SHA256 != hex.EncodeToString(sum[:]) || len(cfg.Channels) != 1 || cfg.Channels[0].Selector.Name != "provider-a" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}
+
 func TestConfigYAMLRejectsLegacySecretsUnknownAndDuplicateSelectors(t *testing.T) {
 	t.Setenv("TEST_WRITER_TOKEN", "worker-secret")
 	for name, raw := range map[string]string{
@@ -44,6 +65,9 @@ func TestConfigYAMLRejectsLegacySecretsUnknownAndDuplicateSelectors(t *testing.T
 		"codex manifest":     "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n  - enabled: true\n    selector: {name: x, base_url: https://x.example/v1}\n    codex_manifest: true\n",
 		"duplicate selector": "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n  - enabled: true\n    selector: {name: x, base_url: https://x.example/v1}\n  - enabled: false\n    selector: {name: x, base_url: https://x.example:443/v1/}\n",
 		"http selector":      "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n  - enabled: true\n    selector: {name: x, base_url: http://x.example/v1}\n",
+		"duplicate key":      "worker_token_env: TEST_WRITER_TOKEN\nworker_token_env: TEST_WRITER_TOKEN\n",
+		"indirection":        "worker_token_env: TEST_WRITER_TOKEN\nstore: &store {version: 0.1.0}\nchannels: []\n",
+		"multiple documents": "worker_token_env: TEST_WRITER_TOKEN\nchannels: []\n---\nchannels: []\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseConfig([]byte(raw)); err == nil {

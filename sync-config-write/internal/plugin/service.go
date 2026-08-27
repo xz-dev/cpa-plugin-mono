@@ -23,9 +23,6 @@ func (f ExecutorFunc) Execute(ctx context.Context, op Operation, settings Settin
 type Option func(*Service)
 
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
-func withAutomaticStartupReconcile() Option {
-	return func(s *Service) { s.automaticStartupReconcile = true }
-}
 
 type job struct {
 	runID     string
@@ -34,29 +31,28 @@ type job struct {
 }
 
 type Service struct {
-	mu                        sync.Mutex
-	queueCond                 *sync.Cond
-	settings                  Settings
-	configured                bool
-	instanceID                string
-	reconfigureSeq            uint64
-	executor                  Executor
-	now                       func() time.Time
-	queue                     []job
-	ctx                       context.Context
-	cancel                    context.CancelFunc
-	stop                      chan struct{}
-	done                      chan struct{}
-	schedulerDone             chan struct{}
-	shutdownOnce              sync.Once
-	statuses                  map[string]*RunStatus
-	activeByOp                map[Operation]string
-	completed                 []string
-	blocker                   *RunStatus
-	blockRecord               BlockRecord
-	deadlines                 map[Operation]time.Time
-	wakeScheduler             chan struct{}
-	automaticStartupReconcile bool
+	mu             sync.Mutex
+	queueCond      *sync.Cond
+	settings       Settings
+	configured     bool
+	instanceID     string
+	reconfigureSeq uint64
+	executor       Executor
+	now            func() time.Time
+	queue          []job
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stop           chan struct{}
+	done           chan struct{}
+	schedulerDone  chan struct{}
+	shutdownOnce   sync.Once
+	statuses       map[string]*RunStatus
+	activeByOp     map[Operation]string
+	completed      []string
+	blocker        *RunStatus
+	blockRecord    BlockRecord
+	deadlines      map[Operation]time.Time
+	wakeScheduler  chan struct{}
 }
 
 func NewService(options ...Option) *Service {
@@ -76,7 +72,7 @@ func NewService(options ...Option) *Service {
 	}
 	workers := NewWorkerStatusClient(client)
 	engine := NewCommitEngine(client, workers, settings, localStatus)
-	service = New(NewWriterExecutor(NewHTTPPlanner(client), engine), append(options, withAutomaticStartupReconcile())...)
+	service = New(NewWriterExecutor(NewHTTPPlanner(client), engine), options...)
 	return service
 }
 
@@ -139,9 +135,6 @@ func (s *Service) configureSettings(next Settings) error {
 	s.refreshStatusIdentityLocked()
 	s.mu.Unlock()
 	s.wake()
-	if !wasConfigured && s.automaticStartupReconcile {
-		_, _, _ = s.enqueue(OperationReconcile)
-	}
 	return nil
 }
 

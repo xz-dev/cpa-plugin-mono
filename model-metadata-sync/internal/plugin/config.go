@@ -25,6 +25,9 @@ const (
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type PlannerConfig struct {
+	Enabled        *bool           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Priority       int             `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Store          yaml.Node       `yaml:"store,omitempty" json:"-"`
 	WorkerTokenEnv string          `yaml:"worker_token_env" json:"worker_token_env"`
 	SyncEpoch      string          `yaml:"sync_epoch,omitempty" json:"sync_epoch,omitempty"`
 	Channels       []ChannelConfig `yaml:"channels" json:"channels"`

@@ -439,6 +439,7 @@ func TestHTTPPlannerRequiresExactFinalReportAndNonNullFetch(t *testing.T) {
 		{name: "missing report", payload: fmt.Sprintf(`{"base_version":%q,"config_base64":%q}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
 		{name: "empty report", payload: fmt.Sprintf(`{"base_version":%q,"config_base64":%q,"report":{}}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
 		{name: "wrong changed type", payload: fmt.Sprintf(`{"base_version":%q,"config_base64":%q,"report":{"changed":"yes"}}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
+		{name: "unexpected report channels", payload: fmt.Sprintf(`{"base_version":%q,"config_base64":%q,"report":{"changed":true,"channels":[]}}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
 		{name: "null report", payload: fmt.Sprintf(`{"base_version":%q,"config_base64":%q,"report":null}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
 		{name: "top case aliases", payload: fmt.Sprintf(`{"BASE_VERSION":%q,"CONFIG_BASE64":%q,"REPORT":{"changed":true}}`, snapshot.Version, configBase64), want: CodeInvalidRequest},
 		{name: "top case duplicate", payload: fmt.Sprintf(`{"base_version":%q,"BASE_VERSION":%q,"config_base64":%q,"report":{"changed":true}}`, snapshot.Version, snapshot.Version, configBase64), want: CodeInvalidRequest},

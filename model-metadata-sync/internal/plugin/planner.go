@@ -120,8 +120,7 @@ type continuationState struct {
 }
 
 type plannerReport struct {
-	Changed  bool             `json:"changed"`
-	Channels []plannedChannel `json:"channels,omitempty"`
+	Changed bool `json:"changed"`
 }
 
 type finalEnvelope struct {
@@ -389,7 +388,7 @@ func finishPlan(version string, document *yaml.Node, cfg runtimeConfig, results 
 	if err != nil || len(proposed) == 0 || len(proposed) > maxSnapshotBytes {
 		return nil, errorInvalid
 	}
-	return finalEnvelope{BaseVersion: version, ConfigBase64: base64.StdEncoding.EncodeToString(proposed), Report: plannerReport{Changed: changed, Channels: results}}, ""
+	return finalEnvelope{BaseVersion: version, ConfigBase64: base64.StdEncoding.EncodeToString(proposed), Report: plannerReport{Changed: changed}}, ""
 }
 
 func plannedPatches(before, after []ModelRef, reports []ModelMetadataResult) ([]plannedModelPatch, error) {

@@ -4,19 +4,28 @@ CLIProxyAPI plugin monorepo. Each child directory is an independent plugin; dire
 
 | Plugin | Ownership |
 |---|---|
-| [`auto-pull-models`](./auto-pull-models) | OpenAI-compatible catalog filtering and atomic membership reconcile only |
-| [`model-metadata-sync`](./model-metadata-sync) | Existing-model metadata enrichment for explicit OpenAI-compatible and Claude selectors |
-| [`model-info`](./model-info) | Existing model information UI; unchanged by split |
+| [`auto-pull-models`](./auto-pull-models) | OpenAI-compatible catalog filtering and membership proposals |
+| [`model-metadata-sync`](./model-metadata-sync) | Existing-model six-field metadata proposals for explicit OpenAI-compatible and Claude selectors |
+| [`model-info`](./model-info) | Read-only detailed model catalog cache and UI |
+| [`sync-config-write`](./sync-config-write) | Serialized stock-CPA config orchestration, provider relay, reconcile, and model-info refresh |
 
 Build outputs live under each plugin's `build/plugins/linux/amd64/<plugin-id>.so`.
 
-Run the split-plugin management contract check with:
+## Selected-Core four-plugin integration
+
+Run real loopback E2E against fixed reviewed Core composition:
 
 ```sh
-PLAN/tests/split-plugins-e2e.sh
+integration/four-plugin-e2e.sh
 ```
 
-It exercises metadata-before-membership, stale revision rejection, metadata retention, and idempotent follow-up sync against a shared mock core.
+Environment:
+
+- `CPA_CORE_SOURCE`: CLIProxyAPI source checkout; default `../CLIProxyAPI`. Checkout is never switched or modified.
+- `CPA_KEEP_E2E_TMP=1`: retain disposable composition/runtime for diagnosis; default removes it.
+- `XDG_CACHE_HOME`: optional parent for disposable test data; defaults to `~/.cache`.
+
+Harness creates a no-hardlink disposable Core clone with direct ancestry through the two approved base patches plus three stable-patch-identical commits. It verifies all five patch IDs, source-checkout immutability, and absence of model-channel/revision/CAS surfaces; uses task-local Go/temp directories; and builds Core plus reproducible versioned c-shared artifacts. Runtime checks cover HTTPS provider membership/metadata through stock `/api-call`, exact full-config PUTs, explicit startup reconcile, independent runtime hashes, exact model-info views, restart persistence, private worker authorization, and missing file-credential/no-PUT gates. Generated credentials stay temporary and must not be supplied from real environments.
 
 ## Split migration
 

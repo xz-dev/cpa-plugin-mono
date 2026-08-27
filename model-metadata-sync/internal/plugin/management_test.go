@@ -45,6 +45,27 @@ func TestInternalRoutesRequireWorkerTokenBeyondManagementAuthorization(t *testin
 	}
 }
 
+func TestConfigYAMLAcceptsCoreNormalizedLifecycleAndOpaqueStore(t *testing.T) {
+	t.Setenv("TEST_WRITER_TOKEN", "worker-secret")
+	raw := append([]byte(`enabled: true
+priority: 7
+store:
+  version: 0.1.0
+  manifest:
+    linux:
+      amd64:
+        sha256: harmless-diagnostic-value
+`), validConfigYAML()...)
+	cfg, err := parseConfig(raw)
+	if err != nil {
+		t.Fatalf("Core-normalized ConfigYAML must be accepted: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	if cfg.SHA256 != hex.EncodeToString(sum[:]) || len(cfg.Channels) != 2 || cfg.Channels[0].Selector.Name != "axis" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}
+
 func TestConfigYAMLStrictAndForbiddenFields(t *testing.T) {
 	t.Setenv("TEST_WRITER_TOKEN", "worker-secret")
 	for name, raw := range map[string]string{
@@ -61,6 +82,8 @@ func TestConfigYAMLStrictAndForbiddenFields(t *testing.T) {
 		"http selector":       "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n- {enabled: true, kind: openai-compatibility, selector: {name: x, base_url: http://x.example/v1}}\n",
 		"bad source order":    "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n- enabled: true\n  kind: openai-compatibility\n  selector: {name: x, base_url: https://x.example/v1}\n  metadata_sources: [models.dev/openai, modelparams.dev/openai/subscription]\n",
 		"claude codex":        "worker_token_env: TEST_WRITER_TOKEN\nchannels:\n- enabled: true\n  kind: claude\n  selector: {config_index: 0, base_url: https://api.anthropic.com, prefix: anthropic}\n  codex_manifest: true\n",
+		"store indirection":   "worker_token_env: TEST_WRITER_TOKEN\nstore: &store {version: 0.1.0}\nchannels: []\n",
+		"multiple documents":  "worker_token_env: TEST_WRITER_TOKEN\nchannels: []\n---\nchannels: []\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseConfig([]byte(raw)); err == nil {
@@ -261,7 +284,7 @@ func TestManagementFullPlannerRoundTrip(t *testing.T) {
 		t.Fatalf("final=%d %s", response.StatusCode, response.Body)
 	}
 	var final finalEnvelope
-	if err := json.Unmarshal(response.Body, &final); err != nil || !final.Report.Changed || len(final.Report.Channels) != 2 {
+	if err := json.Unmarshal(response.Body, &final); err != nil || !final.Report.Changed {
 		t.Fatalf("final=%+v err=%v", final, err)
 	}
 	proposed, err := base64.StdEncoding.Strict().DecodeString(final.ConfigBase64)

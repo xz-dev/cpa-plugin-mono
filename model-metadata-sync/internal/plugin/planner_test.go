@@ -222,7 +222,7 @@ func TestPlanAllSelectorsMetadataOnlyAndPreservesDocument(t *testing.T) {
 		t.Fatalf("unexpected extra fetch: %+v", intermediate.NextFetch)
 	}
 	final := result.(finalEnvelope)
-	if !final.Report.Changed || len(final.Report.Channels) != 2 {
+	if !final.Report.Changed {
 		t.Fatalf("report=%+v", final.Report)
 	}
 	proposed, err := base64.StdEncoding.Strict().DecodeString(final.ConfigBase64)
@@ -318,13 +318,6 @@ func TestPublicCatalogsSurviveContinuationRoundTrips(t *testing.T) {
 	}
 	if !strings.Contains(string(proposed), "max-output-tokens: 32000") || !strings.Contains(string(proposed), "output-modalities: [text]") {
 		t.Fatalf("public metadata was lost across continuation:\n%s", proposed)
-	}
-	fields := map[string]MetadataFieldResult{}
-	for _, field := range final.Report.Channels[0].Metadata[0].Fields {
-		fields[field.Field] = field
-	}
-	if fields["max-output-tokens"].Source != "modelparams.dev/openai/subscription" || fields["output-modalities"].Source != "models.dev/openai" {
-		t.Fatalf("provenance=%+v", fields)
 	}
 }
 

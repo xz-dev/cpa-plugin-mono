@@ -145,6 +145,42 @@ func TestBlockedAdmissionAndBlockClearAreRaceFree(t *testing.T) {
 	}
 }
 
+func TestConfigureLeavesStartupBlockUntilExplicitReconcile(t *testing.T) {
+	setValidSecrets(t)
+	s := NewService()
+	defer s.Shutdown()
+	if err := s.Configure(validConfigYAML()); err != nil {
+		t.Fatal(err)
+	}
+
+	status := s.statusWithRuns()
+	if !status.WriterBlocked || status.ErrorCode != CodeStartupReconcileRequired {
+		t.Fatalf("status=%+v", status)
+	}
+	reconcileRuns := 0
+	for _, run := range status.Runs {
+		if run.Operation != OperationReconcile {
+			continue
+		}
+		reconcileRuns++
+		if run.RunID != status.BlockingRunID || run.State != StateBlocked || run.ErrorCode != CodeStartupReconcileRequired {
+			t.Fatalf("unexpected startup reconcile run: status=%+v run=%+v", status, run)
+		}
+	}
+	if reconcileRuns != 1 {
+		t.Fatalf("startup reconcile runs=%d status=%+v", reconcileRuns, status)
+	}
+
+	blocked := s.HandleManagement(managementRequest(http.MethodPost, runAutoPullPath, nil))
+	if blocked.StatusCode != http.StatusConflict || !jsonBodyHasCode(blocked.Body, CodeWriterBlocked) {
+		t.Fatalf("blocked=%d %s", blocked.StatusCode, blocked.Body)
+	}
+	explicit := s.HandleManagement(managementRequest(http.MethodPost, reconcilePath, nil))
+	if explicit.StatusCode != http.StatusAccepted || acceptedRunID(t, explicit) == status.BlockingRunID {
+		t.Fatalf("explicit reconcile=%d %s", explicit.StatusCode, explicit.Body)
+	}
+}
+
 func TestStartupBlocksWritesButAdmitsReconcile(t *testing.T) {
 	setValidSecrets(t)
 	s := New(ExecutorFunc(func(context.Context, Operation, Settings) Outcome { return Outcome{Code: CodeNotImplemented} }))

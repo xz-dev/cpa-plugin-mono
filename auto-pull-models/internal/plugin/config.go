@@ -22,6 +22,9 @@ const (
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type PlannerConfig struct {
+	Enabled        *bool           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Priority       int             `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Store          yaml.Node       `yaml:"store,omitempty" json:"-"`
 	WorkerTokenEnv string          `yaml:"worker_token_env" json:"worker_token_env"`
 	SyncEpoch      string          `yaml:"sync_epoch,omitempty" json:"sync_epoch,omitempty"`
 	Channels       []ChannelConfig `yaml:"channels" json:"channels"`
@@ -55,13 +58,21 @@ type runtimeConfig struct {
 }
 
 func parseConfig(raw []byte) (runtimeConfig, error) {
+	nodeDecoder := yaml.NewDecoder(bytes.NewReader(raw))
+	var document yaml.Node
+	if err := nodeDecoder.Decode(&document); err != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode || validateMappings(document.Content[0], make(map[*yaml.Node]bool)) != nil || hasYAMLIndirection(document.Content[0], make(map[*yaml.Node]bool)) {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
+	}
+	var trailing yaml.Node
+	if err := nodeDecoder.Decode(&trailing); err != io.EOF {
+		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
+	}
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
 	var cfg PlannerConfig
 	if err := decoder.Decode(&cfg); err != nil {
 		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
 	}
-	var trailing yaml.Node
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return runtimeConfig{}, fmt.Errorf("invalid plugin configuration")
 	}
