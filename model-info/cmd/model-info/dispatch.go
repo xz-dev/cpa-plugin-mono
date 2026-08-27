@@ -75,7 +75,9 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "xz-dev",
 			GitHubRepository: "https://github.com/xz-dev/cpa-plugin-mono",
-			ConfigFields:     []pluginapi.ConfigField{},
+			ConfigFields: []pluginapi.ConfigField{
+				{Name: "worker_token_env", Type: pluginapi.ConfigFieldTypeString, Description: "Environment variable containing the shared Writer coordination token"},
+			},
 		},
 		Capabilities: registrationCapability{ManagementAPI: true},
 	}

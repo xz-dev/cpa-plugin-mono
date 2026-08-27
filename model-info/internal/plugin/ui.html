@@ -42,7 +42,7 @@
   <input id="q" placeholder="搜索 id / 名称 / provider…">
   <select id="provider"><option value="">全部 provider</option></select>
   <button id="refresh">刷新</button>
-  <input id="manualKey" type="password" placeholder="management key（宿主未存时手填）">
+  <input id="manualKey" type="password" autocomplete="off" placeholder="management key（宿主未存时手填）">
 </div>
 <div id="status">加载中…</div>
 <table><thead><tr>
@@ -51,49 +51,37 @@
   <th>推理等级</th><th>输入</th><th>输出</th>
 </tr></thead><tbody id="rows"></tbody></table>
 <script>
-// Host auth: same obfuscation scheme as auto-pull-models / cpa-key-policy.
+// Reuse Management Center's existing credential. UI never stores a new secret.
 const ENC_PREFIX = "enc::v1::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const STORAGE_KEY_AUTH = "cli-proxy-auth";
 let manualKey = "";
 function encodeText(t) { return new TextEncoder().encode(t); }
 function decodeText(b) { return new TextDecoder().decode(b); }
-function getKeyBytes() {
+function keyBytes() {
   try { return encodeText(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`); }
   catch { return encodeText(SECRET_SALT); }
 }
-function xorBytes(data, key) {
-  const out = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) out[i] = data[i] ^ key[i % key.length];
-  return out;
-}
-function fromBase64(b64) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-function deobfuscate(payload) {
-  if (!payload || !payload.startsWith(ENC_PREFIX)) return payload;
-  try { return decodeText(xorBytes(fromBase64(payload.slice(ENC_PREFIX.length)), getKeyBytes())); }
-  catch { return payload; }
-}
-function inIframe() { try { return window.self !== window.top; } catch { return false; } }
-function readHostKey() {
-  if (!inIframe()) return "";
+function hostManagementKey() {
   let raw;
   try { raw = localStorage.getItem(STORAGE_KEY_AUTH); } catch { return ""; }
   if (!raw) return "";
-  let plain;
-  try { plain = deobfuscate(raw); } catch { return ""; }
   try {
-    const n = JSON.parse(plain);
-    const state = n.state ?? n;
-    return typeof state.managementKey === "string" ? state.managementKey.trim() : "";
+    if (raw.startsWith(ENC_PREFIX)) {
+      const binary = atob(raw.slice(ENC_PREFIX.length));
+      const key = keyBytes();
+      raw = decodeText(Uint8Array.from(binary, (c, i) => c.charCodeAt(0) ^ key[i % key.length]));
+    }
+    const parsed = JSON.parse(raw);
+    return String((parsed.state ?? parsed).managementKey ?? '').trim();
   } catch { return ""; }
 }
-function mgmtKey() { return manualKey || readHostKey(); }
-const api = location.origin + '/v0/management/plugins/model-info';
+function headers() {
+  const key = manualKey || hostManagementKey();
+  return key ? {Accept: 'application/json', Authorization: 'Bearer ' + key} : {Accept: 'application/json'};
+}
+const modelInfoAPI = location.origin + '/v0/management/plugins/model-info';
+const writerAPI = location.origin + '/v0/management/plugins/sync-config-write';
 
 let rawModels = [], effModels = [], view = 'effective';
 let sortKey = 'id', sortAsc = true;
@@ -102,6 +90,9 @@ const rows = document.getElementById('rows'), status = document.getElementById('
 
 function fmtK(n) { return n ? (n >= 1000 ? (n/1000).toFixed(0)+'k' : n) : ''; }
 
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 function render() {
   const q = document.getElementById('q').value.toLowerCase();
   const pv = document.getElementById('provider').value;
@@ -114,15 +105,15 @@ function render() {
     return sortAsc ? c : -c;
   });
   rows.innerHTML = list.map(m => `<tr>
-    <td class="mono">${m.id}</td>
-    <td>${m.display_name || m.id}</td>
-    <td class="mono">${m.provider || ''}</td>
+    <td class="mono">${esc(m.id)}</td>
+    <td>${esc(m.display_name || m.id)}</td>
+    <td class="mono">${esc(m.provider || '')}</td>
     <td class="mono">${fmtK(m.context_window) || '<span class="miss">缺</span>'}</td>
     <td class="mono">${fmtK(m.max_input_tokens) || '<span class="miss">缺</span>'}</td>
     <td class="mono">${fmtK(m.max_tokens) || '<span class="miss">缺</span>'}${m.max_source === 'fallback-context' ? '<span class="src">回退</span>' : m.max_source === 'upstream' ? '<span class="src" style="background:#e8eaf6">原生</span>' : ''}</td>
-    <td>${(m.reasoning_levels||[]).map(l => `<span class="lvl">${l}</span>`).join('') || '<span class="miss">无</span>'}</td>
-    <td>${(m.input_modalities||[]).join(',')}</td>
-    <td>${(m.output_modalities||[]).join(',')}</td>
+    <td>${(m.reasoning_levels||[]).map(l => `<span class="lvl">${esc(l)}</span>`).join('') || '<span class="miss">无</span>'}</td>
+    <td>${esc((m.input_modalities||[]).join(','))}</td>
+    <td>${esc((m.output_modalities||[]).join(','))}</td>
   </tr>`).join('');
   const missingInput = rawModels.filter(m => !m.max_input_tokens).length;
   const missingOutput = rawModels.filter(m => !m.max_tokens).length;
@@ -131,49 +122,60 @@ function render() {
     : `${list.length} / ${effModels.length} 个模型（缺最大输入/输出时按上下文回退）`;
 }
 
+async function parseJSON(response) {
+  const text = await response.text();
+  try { return JSON.parse(text); } catch { throw new Error('HTTP ' + response.status); }
+}
+
 async function load() {
   status.textContent = '加载中…';
   try {
-    const headers = {Accept: 'application/json'};
-    const key = mgmtKey();
-    if (key) headers.Authorization = 'Bearer ' + key;
-    else { status.textContent = inIframe() ? '未读到 Management Center 密钥，请手填 management key' : '请手填 management key'; return; }
+    const authHeaders = headers();
     const [rc, re] = await Promise.all([
-      fetch(api + '/last', {headers}), fetch(api + '/effective', {headers}),
+      fetch(modelInfoAPI + '/catalog', {headers: authHeaders}), fetch(modelInfoAPI + '/effective', {headers: authHeaders}),
     ]);
-    const parse = async r => { const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 120)); } };
-    let c, ce;
-    try { [c, ce] = await Promise.all([parse(rc), parse(re)]); } catch (e) { status.textContent = '请求失败: ' + e; return; }
-    if (c.error || (ce && ce.error)) { status.textContent = '错误: ' + (c.error || ce.error); return; }
-    if (!c.models) { // cold cache: fetch fresh
-      const rf = await fetch(api + '/catalog', {headers});
-      const cf = await parse(rf);
-      if (cf.error) { status.textContent = '错误: ' + cf.error; return; }
-      rawModels = cf.models || [];
-      const re2 = await fetch(api + '/effective', {headers});
-      const ce2 = await parse(re2);
-      effModels = ce2.models || [];
-    } else {
-      rawModels = c.models;
-      effModels = ce.models || [];
-    }
+    if (!rc.ok || !re.ok) throw new Error('HTTP ' + (!rc.ok ? rc.status : re.status));
+    const [c, ce] = await Promise.all([parseJSON(rc), parseJSON(re)]);
+    rawModels = c.models || [];
+    effModels = ce.models || [];
     const provs = [...new Set(rawModels.map(m => m.provider).filter(Boolean))].sort();
     const sel = document.getElementById('provider');
-    sel.innerHTML = '<option value="">全部 provider</option>' + provs.map(p => `<option>${p}</option>`).join('');
+    sel.replaceChildren(new Option('全部 provider', ''), ...provs.map(p => new Option(p, p)));
     render();
   } catch (e) { status.textContent = '请求失败: ' + e; }
 }
 
+async function refresh() {
+  status.textContent = 'Writer 刷新中…';
+  try {
+    const trigger = await fetch(writerAPI + '/model-info/catalog', {method: 'POST', headers: headers()});
+    const accepted = await parseJSON(trigger);
+    if (trigger.status !== 202 || !accepted.run_id) throw new Error(accepted.error_code || 'HTTP ' + trigger.status);
+    for (;;) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const response = await fetch(writerAPI + '/status?run_id=' + encodeURIComponent(accepted.run_id), {headers: headers()});
+      const run = await parseJSON(response);
+      if (!response.ok) throw new Error(run.error_code || 'HTTP ' + response.status);
+      if (['succeeded', 'failed', 'uncertain', 'blocked'].includes(run.state)) {
+        if (run.state !== 'succeeded') throw new Error(run.error_code || run.state);
+        await load();
+        return;
+      }
+    }
+  } catch (e) { status.textContent = '刷新失败: ' + e; }
+}
+
 document.getElementById('q').addEventListener('input', render);
 document.getElementById('provider').addEventListener('change', render);
-document.getElementById('refresh').addEventListener('click', load);
+document.getElementById('refresh').addEventListener('click', refresh);
+document.getElementById('manualKey').addEventListener('change', event => { manualKey = event.target.value.trim(); load(); });
 document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   tab.classList.add('active');
   view = tab.dataset.view;
   render();
 }));
-document.getElementById('manualKey').addEventListener('change', e => { manualKey = e.target.value.trim(); load(); });
+
 document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
   const k = th.dataset.k;
   if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = true; }
